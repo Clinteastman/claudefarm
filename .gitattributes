@@ -1,0 +1,10 @@
+# Enforce LF on every platform - shell scripts and SSH configs would
+# break on Linux servers if checked out with CRLF on Windows.
+
+*.sh text eol=lf
+*.py text eol=lf
+*.service text eol=lf
+client/claude-instances-*.cfg text eol=lf
+client/ssh-config.example text eol=lf
+client/setup-client.sh text eol=lf
+server/cheatsheet text eol=lf

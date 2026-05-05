@@ -1,0 +1,93 @@
+#!/bin/bash
+# Quick-reference cheatsheet. Type `cheatsheet` from any shell on a machine
+# running claude-mgr to display this. Symlinked to /usr/local/bin/cheatsheet
+# from claude-mgr/cheatsheet in the claudefarm repo.
+
+# Use less if available + interactive, otherwise just cat
+PAGER="cat"
+if [ -t 1 ] && command -v less >/dev/null 2>&1; then
+  PAGER="less -R -F -X"  # -F exits if content fits on one screen, -X disables alt-screen
+fi
+
+$PAGER <<'CHEAT'
+
+K12 LXC 105 CHEATSHEET
+======================
+
+  Type `cheatsheet` any time to show this.
+
+----------------------------------------------------------------------
+TMUX (the terminal multiplexer Claude runs inside)
+----------------------------------------------------------------------
+
+  Default prefix is Ctrl+b. Most commands need it first.
+
+  DETACH (leave Claude running, exit terminal):  Ctrl+b then d
+  REATTACH from terminal:                        ssh claude-<instance>
+                                                 (or `tmux a -t claude-<x>` here)
+  LIST sessions:                                 tmux ls
+
+  SCROLL through history:                        scroll wheel (mouse mode is on)
+                                                 OR Ctrl+b [ then PgUp/PgDn, q to exit
+  COPY text:                                     click + drag (auto-copies)
+
+  SPLIT pane vertically:                         Ctrl+b then |
+  SPLIT pane horizontally:                       Ctrl+b then -
+  SWITCH between panes:                          Alt+arrow keys (no prefix needed)
+  CLOSE a pane:                                  type `exit` or Ctrl+d
+
+  RELOAD tmux config after editing it:           Ctrl+b then r
+
+  !!! NEVER Ctrl+C inside Claude !!!
+  That kills the Claude process. Use Ctrl+b then d to safely detach.
+
+----------------------------------------------------------------------
+CLAUDE INSTANCES (managed by `claude-mgr`)
+----------------------------------------------------------------------
+
+  Open the manager TUI:        claude-mgr
+  List all instances:          claude-mgr list
+  Start a new instance:        claude-mgr start <name> [--workdir /path]
+                                                       [--clone <git-url>]
+  Restart an instance:         claude-mgr restart <name>
+  Stop an instance:            claude-mgr stop <name>
+  Show last URL:               claude-mgr url <name>
+  Remove an instance:          claude-mgr remove <name> [--purge-workdir]
+
+  Each instance is a separate Claude conversation in its own tmux session
+  named `claude-<instance>`. Workdir defaults to /root; pass --workdir to
+  point at /data/dev/<repo> instead.
+
+----------------------------------------------------------------------
+HOMELAB WIRING
+----------------------------------------------------------------------
+
+  Repo on this LXC:            /data/dev/claudefarm
+  Repo on Windows:             C:\Users\cmoss\github\k12-homelab
+  Runbook:                     <repo>/runbook/k12-runbook.md
+
+  Reach Proxmox host:          ssh proxmox        (alias)
+  Reach Sound detector Pi:     ssh satellite      (alias)
+  Run command in any LXC:      ssh proxmox "pct exec <id> -- <cmd>"
+
+  HA REST API token:           /root/.claude/ha-token
+  Test it:
+    curl -H "Authorization: Bearer $(cat /root/.claude/ha-token)" \
+      https://ha.mossom.co.uk/api/
+
+----------------------------------------------------------------------
+HA ANNOUNCE (talk through the user's Google Hubs)
+----------------------------------------------------------------------
+
+  Skill: ~/.claude/skills/ha-announce/SKILL.md
+
+  Quick test:
+    TOKEN=$(cat /root/.claude/ha-token)
+    curl -X POST -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"message":"Claude on K12 says hi","target":"all"}' \
+      https://ha.mossom.co.uk/api/services/script/announce
+
+  target: cabin / living_room / bedroom / all
+
+CHEAT
