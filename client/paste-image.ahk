@@ -33,9 +33,12 @@ LOG_PATH    := A_Temp . "\claudefarm-paste-image.log"
 
     ; Run NOT hidden the first time so any PowerShell error is visible.
     ; Once you've confirmed it works end-to-end, change "" to "Hide" below.
+    ; cmd.exe-style redirect (> + 2>&1) so the `*>` PowerShell shorthand
+    ; doesn't get parsed as a positional arg to the .ps1 (it was being
+    ; passed in as $ServerHost = "*", which broke ssh hostname resolution).
     cmd := 'powershell.exe -NoProfile -ExecutionPolicy Bypass'
          . ' -File "' . SCRIPT_PATH . '"'
-         . ' *> "' . LOG_PATH . '"'
+         . ' > "' . LOG_PATH . '" 2>&1'
 
     try {
         Run(A_ComSpec . ' /c ' . cmd, , "Hide")
