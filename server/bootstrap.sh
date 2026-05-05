@@ -189,6 +189,14 @@ CLAUDE_MGR_RESTART_VIA=""
 # Where the homelab repo lives on this machine (so claude-mgr can write
 # the auto-synced SSH alias file there).
 CLAUDEFARM_REPO="$REPO_PATH"
+
+# Optional extras: anything you set here gets exported into every Claude
+# instance's environment via systemd EnvironmentFile=. Useful for tools
+# like the gscontent 'preview' command that need PREVIEW_URL_BASE +
+# PREVIEW_DIR set in the Claude shell.
+#
+# PREVIEW_URL_BASE="https://preview.example.com"
+# PREVIEW_DIR="/data/dev/_preview"
 EOF
   ok "wrote $CONF (review and edit as needed)"
 fi

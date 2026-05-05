@@ -1,5 +1,5 @@
 [Unit]
-Description=Claude Code Remote (LXC 105) instance %i with Telegram notifications
+Description=Claude Code Remote instance %i with Telegram notifications
 After=network-online.target
 Wants=network-online.target
 
@@ -7,6 +7,10 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=/root
+# Pull per-host config (CLAUDE_MGR_* + any user-added env vars like
+# PREVIEW_URL_BASE) into the unit's environment. Leading `-` makes it
+# optional - the unit starts fine if the file doesn't exist.
+EnvironmentFile=-/etc/claude-mgr.conf
 # %i is the instance name (the part after @ in the service unit)
 # Default workdir is /root. Override per-instance with a drop-in:
 #   mkdir -p /etc/systemd/system/claude-remote@dev.service.d
