@@ -118,6 +118,27 @@ Pick "new instance", give it a name, choose a workdir. Done.
 After editing, log out + back in (or `source /etc/claude-mgr.conf`) and
 run `claude-mgr sync-ssh` to regenerate the alias file with the new tag.
 
+### Adding custom env vars (visible inside Claude instances)
+
+`/etc/claude-mgr.conf` doubles as the place to set extra environment
+variables you want every Claude instance to see. The systemd unit reads
+the file via `EnvironmentFile=`, and the wrapper forwards anything
+matching `CLAUDE_MGR_*`, `CLAUDEFARM_*`, `PREVIEW_*`, or `TELEGRAM_*`
+prefixes through tmux into the Claude process.
+
+Example - exposing the gscontent `preview` tool's URL config:
+
+```bash
+PREVIEW_URL_BASE="https://preview.example.com"
+PREVIEW_DIR="/data/dev/_preview"
+```
+
+Restart any running instance (`systemctl restart claude-remote@<name>.service`)
+to pick up new vars. New instances inherit them automatically.
+
+If you need a different prefix, edit the `awk` filter in
+`/usr/local/bin/claude-remote-with-telegram.sh` (or open a PR).
+
 ### Examples
 
 **Bare-metal Linux box on your LAN, restarts itself:**
