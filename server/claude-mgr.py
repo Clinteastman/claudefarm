@@ -239,6 +239,27 @@ def remove_dropin(name: str) -> None:
     systemctl("daemon-reload")
 
 
+def ensure_venv(workdir: str) -> str | None:
+    """
+    Create <workdir>/.venv if it doesn't exist (uv preferred, python3 -m venv
+    fallback). Returns a status message, or None if venv creation was skipped
+    (default workdir is /root which we leave alone).
+    """
+    if Path(workdir).resolve() == Path(DEFAULT_WORKDIR).resolve():
+        return None
+    venv = Path(workdir) / ".venv"
+    if venv.is_dir():
+        return f"venv exists at {venv}"
+    Path(workdir).mkdir(parents=True, exist_ok=True)
+    if shutil.which("uv"):
+        r = run(["uv", "venv", "--quiet", str(venv)])
+    else:
+        r = run(["python3", "-m", "venv", str(venv)])
+    if r.returncode != 0:
+        return f"venv creation FAILED: {r.stderr.strip()}"
+    return f"created venv at {venv}"
+
+
 def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
                    clone_url: str | None = None) -> tuple[bool, str]:
     if not re.fullmatch(r"[a-z][a-z0-9_-]*", name):
@@ -256,6 +277,8 @@ def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
 
     Path(workdir).mkdir(parents=True, exist_ok=True)
 
+    venv_msg = ensure_venv(workdir)
+
     if workdir != DEFAULT_WORKDIR:
         write_workdir_dropin(name, workdir)
 
@@ -264,7 +287,24 @@ def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
     if r.returncode != 0:
         return False, f"systemctl restart failed: {r.stderr.strip()}"
     sync_ssh()
-    return True, f"started claude-remote@{name} (workdir={workdir})"
+    msg = f"started claude-remote@{name} (workdir={workdir})"
+    if venv_msg:
+        msg += f"\n  {venv_msg}"
+    return True, msg
+
+
+def clean_venv(name: str) -> tuple[bool, str]:
+    """Nuke + recreate <workdir>/.venv for an instance (e.g. when deps got
+    wedged). Doesn't restart the instance - shells launched after will pick up
+    the fresh venv on their next activation."""
+    workdir = read_workdir(name)
+    if Path(workdir).resolve() == Path(DEFAULT_WORKDIR).resolve():
+        return False, f"instance '{name}' uses {DEFAULT_WORKDIR} - no venv to clean"
+    venv = Path(workdir) / ".venv"
+    if venv.is_dir():
+        shutil.rmtree(venv)
+    msg = ensure_venv(workdir)
+    return True, f"cleaned venv for {name}: {msg}"
 
 
 def stop_instance(name: str) -> tuple[bool, str]:
@@ -599,6 +639,7 @@ def tui_instance_menu(name: str):
             (f"{ICON_LINK}  show last claude.ai url", "url"),
             (f"{ICON_REFRESH}  restart (kills convo, fresh url)", "restart"),
             (f"{ICON_STOP}  stop", "stop"),
+            (f"{ICON_REFRESH}  rebuild .venv (uv venv from scratch)", "clean-venv"),
             (f"{ICON_TRASH}  remove (keep workdir)", "remove"),
             (f"{ICON_TRASH}  remove + purge workdir", "purge"),
             (f"{ICON_BACK}  back", "back"),
@@ -624,6 +665,13 @@ def tui_instance_menu(name: str):
             clear_screen()
             ok, msg = stop_instance(name)
             console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
+            input("press enter to continue...")
+        elif ans == "clean-venv":
+            clear_screen()
+            with console.status(f"[info]rebuilding venv for {name}...[/info]", spinner="dots"):
+                ok, msg = clean_venv(name)
+            console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
+            console.print("[muted]any deps that were installed are gone - re-install via pip / uv pip from inside the instance[/muted]")
             input("press enter to continue...")
         elif ans == "remove":
             confirm = select_in_box(
@@ -776,6 +824,12 @@ def cmd_sync_ssh(args):
     sys.exit(0 if ok else 1)
 
 
+def cmd_clean_venv(args):
+    ok, msg = clean_venv(args.name)
+    console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
+    sys.exit(0 if ok else 1)
+
+
 def main():
     if len(sys.argv) == 1:
         if not sys.stdout.isatty():
@@ -798,6 +852,7 @@ def main():
     s = sp.add_parser("url"); s.add_argument("name"); s.set_defaults(func=cmd_url)
     s = sp.add_parser("remove"); s.add_argument("name"); s.add_argument("--purge-workdir", action="store_true"); s.set_defaults(func=cmd_remove)
     sp.add_parser("sync-ssh").set_defaults(func=cmd_sync_ssh)
+    s = sp.add_parser("clean-venv", help="nuke + recreate the .venv in this instance's workdir"); s.add_argument("name"); s.set_defaults(func=cmd_clean_venv)
     args = p.parse_args()
     args.func(args)
 

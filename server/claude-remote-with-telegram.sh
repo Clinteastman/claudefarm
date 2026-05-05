@@ -34,15 +34,24 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 # (or environment file) and ssh in once to accept trust on first run.
 cd "$WORKDIR"
 
+# Auto-activate per-instance Python venv if one exists at <workdir>/.venv.
+# claude-mgr creates this on instance startup for non-default workdirs so
+# `pip install` from inside Claude doesn't pollute the system Python.
+if [ -f "$WORKDIR/.venv/bin/activate" ]; then
+    # shellcheck disable=SC1091
+    . "$WORKDIR/.venv/bin/activate"
+    echo "[$(date -Is)] activated venv at $WORKDIR/.venv" | tee -a "$LOG"
+fi
+
 # Build a list of -e flags so any env var the systemd unit handed us
-# (CLAUDE_*, PREVIEW_*, TELEGRAM_*) reaches the new tmux session and
-# therefore Claude. Without this, only what we name explicitly survives -
-# tmux servers shared across instances don't auto-propagate the wrapper's
-# env to new sessions.
+# (CLAUDE_*, PREVIEW_*, TELEGRAM_*, plus VIRTUAL_ENV/PATH from venv) reaches
+# the new tmux session and therefore Claude. Without this, only what we name
+# explicitly survives - tmux servers shared across instances don't
+# auto-propagate the wrapper's env to new sessions.
 TMUX_ENV_ARGS=(-e "CLAUDE_INSTANCE=$INSTANCE")
 while IFS= read -r _name; do
     [ -n "${_name:-}" ] && TMUX_ENV_ARGS+=(-e "${_name}=${!_name}")
-done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_)/ {print $1}')
+done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|VIRTUAL_ENV|PATH)/ {print $1}')
 
 tmux new-session -d -s "$SESSION" "${TMUX_ENV_ARGS[@]}" "claude --name \"$SESSION_NAME\""
 tmux set-option -t "$SESSION" -g window-size latest 2>/dev/null || true

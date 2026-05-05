@@ -96,6 +96,19 @@ else
   ok "claude $(claude --version 2>/dev/null | head -1) installed"
 fi
 
+# ---------- uv (per-instance venv tool) -------------------------------------
+
+step "uv (per-instance Python venv tool)"
+if command -v uv >/dev/null 2>&1; then
+  skip "uv $(uv --version 2>/dev/null | awk '{print $2}')"
+else
+  info "installing uv from astral.sh"
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh >/dev/null 2>&1 \
+    || pip3 install --break-system-packages --quiet uv \
+    || fail "uv install failed (tried both curl + pip)"
+  ok "uv $(uv --version 2>/dev/null | awk '{print $2}') installed"
+fi
+
 # ---------- repo clone -------------------------------------------------------
 
 REPO_PATH="${CLAUDEFARM_REPO:-/data/dev/claudefarm}"

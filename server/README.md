@@ -185,7 +185,30 @@ claude-mgr url <name>                        # last claude.ai URL captured
 claude-mgr remove <name>                     # stop + disable, KEEP workdir
 claude-mgr remove <name> --purge-workdir     # also delete workdir
 claude-mgr sync-ssh                          # regenerate the alias file
+claude-mgr clean-venv <name>                 # nuke + recreate <workdir>/.venv
 ```
+
+## Per-instance Python venv
+
+When you start an instance with a workdir other than `/root`, claude-mgr
+auto-creates `<workdir>/.venv` (using `uv` if available, falling back to
+`python3 -m venv`). The wrapper sources it before launching Claude, so any
+`pip install` you run from inside the Claude conversation lives in that
+venv only - it can't pollute the system Python or sibling instances.
+
+The default `/root` workdir is left alone on purpose - it's the throwaway
+slot where you wouldn't want a venv anyway.
+
+If a venv ever goes wrong (uninstallable conflict, corrupted packages,
+whatever), `claude-mgr clean-venv <name>` nukes and recreates it. The
+running instance keeps using its current shell; the fresh venv applies on
+the next instance restart (or new tmux pane that re-sources the activate
+script).
+
+Existing instances created **before** this feature continue to use system
+Python - they have no `.venv` in their workdir, so the wrapper falls
+through. To opt them in, manually create `<workdir>/.venv` (or run
+`claude-mgr clean-venv <name>`) and restart the instance.
 
 Every `start`, `stop`, `restart`, `remove` auto-runs `sync-ssh` so the alias
 file stays current. Commit + push the repo to share with clients.
