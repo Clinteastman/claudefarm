@@ -19,10 +19,27 @@
 
 #Requires AutoHotkey v2.0
 
-SCRIPT_PATH := A_MyDocuments . "\..\github\claudefarm\client\paste-image.ps1"
+; Resolve the script path relative to THIS .ahk file's directory.
+; Works regardless of where you cloned the repo, as long as paste-image.ps1
+; sits next to this .ahk.
+SCRIPT_PATH := A_ScriptDir . "\paste-image.ps1"
+LOG_PATH    := A_Temp . "\claudefarm-paste-image.log"
 
 ^+!v::  ; Ctrl+Shift+Alt+V
 {
-    ; Run hidden so we don't get a flashing PowerShell window
-    Run('powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' . SCRIPT_PATH . '"', , "Hide")
+    ; Quick visual confirmation the hotkey fired (sound + tray tip).
+    SoundBeep 1000, 80
+    TrayTip "claudefarm: paste-image", "Hotkey fired - shipping image to server...", 2
+
+    ; Run NOT hidden the first time so any PowerShell error is visible.
+    ; Once you've confirmed it works end-to-end, change "" to "Hide" below.
+    cmd := 'powershell.exe -NoProfile -ExecutionPolicy Bypass'
+         . ' -File "' . SCRIPT_PATH . '"'
+         . ' *> "' . LOG_PATH . '"'
+
+    try {
+        Run(A_ComSpec . ' /c ' . cmd, , "Hide")
+    } catch as e {
+        TrayTip "claudefarm: paste-image", "Run() failed: " . e.Message, 5
+    }
 }
