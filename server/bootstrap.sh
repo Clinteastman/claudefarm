@@ -113,7 +113,7 @@ else
   ok "cloned"
 fi
 
-MGR="$REPO_PATH/claude-mgr"
+MGR="$REPO_PATH/server"
 [ -d "$MGR" ] || fail "$MGR not found - is the repo up to date?"
 
 # ---------- symlinks ---------------------------------------------------------
