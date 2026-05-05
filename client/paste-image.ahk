@@ -2,13 +2,14 @@
 ; screenshot lands on the claudefarm server and its remote path gets
 ; typed into the focused window. Designed for AutoHotkey v2.
 ;
-; Default hotkey:  Win+Shift+V
+; Default hotkey:  Ctrl+Shift+Alt+V
 ;
-;   Why not Ctrl+Alt+V?  On UK / international keyboards, Windows
-;   treats Ctrl+Alt as AltGr, and AltGr+V types ® (registered
-;   trademark). If AHK ever fails to intercept, you'd accidentally
-;   spam ® into your terminal. Win+Shift+V has no default OS binding,
-;   so it's safe even if this script isn't loaded.
+;   Why three modifiers?  Single + double-modifier combos all clash
+;   somewhere on Windows: Ctrl+Alt+V = AltGr+V = R on UK/intl
+;   keyboards. Win+V = clipboard history. Win+Shift+V = notification
+;   cycling on newer Win11 builds. Ctrl+Shift+V = paste in many apps.
+;   Three modifiers + V is unbound everywhere, can't generate a stray
+;   character if AHK isn't loaded, and is still one chord to press.
 ;
 ; Install AutoHotkey v2 from https://www.autohotkey.com/v2/
 ; Then double-click this file to load. Drop a shortcut into
@@ -20,7 +21,7 @@
 
 SCRIPT_PATH := A_MyDocuments . "\..\github\claudefarm\client\paste-image.ps1"
 
-#+v::  ; Win+Shift+V
+^+!v::  ; Ctrl+Shift+Alt+V
 {
     ; Run hidden so we don't get a flashing PowerShell window
     Run('powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' . SCRIPT_PATH . '"', , "Hide")
