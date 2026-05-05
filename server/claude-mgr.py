@@ -355,7 +355,10 @@ def state_icon(i: dict) -> Text:
     return Text(f"{ICON_DOT_OFF}", style=C_OVERLAY)
 
 
-PANEL_WIDTH = 100  # cap so the TUI doesn't span ultra-wide terminals
+def panel_width() -> int:
+    """Cap at 130 cols, but leave at least 4 cols of breathing room either side."""
+    w = console.size.width
+    return min(130, max(60, w - 8))
 
 
 def render_header() -> Text:
@@ -367,33 +370,117 @@ def render_header() -> Text:
     return title
 
 
-def render_footer(hint: str = "use the menu below") -> Text:
-    foot = Text(justify="center", style="muted")
-    foot.append(hint)
-    return foot
+def render_footer(hint: str) -> Text:
+    return Text(hint, justify="center", style="muted")
 
 
-def render_screen(body) -> Panel:
+def render_screen(body, footer_hint: str | None = None) -> Panel:
     """Wrap a body renderable in the header / body / footer Panel layout."""
-    inner = Group(
-        render_header(),
-        Rule(style=C_SURFACE1),
-        body,
-    )
+    parts = [render_header(), Rule(style=C_SURFACE1), body]
+    if footer_hint:
+        parts.append(Rule(style=C_SURFACE1))
+        parts.append(render_footer(footer_hint))
     return Panel(
-        inner,
+        Group(*parts),
         border_style=C_MAUVE,
         box=ROUNDED,
         padding=(1, 2),
-        width=PANEL_WIDTH,
+        width=panel_width(),
     )
 
 
-def print_centered(panel: Panel, top_pad: int = 1):
-    """Print a panel horizontally centred with some breathing space above."""
+def print_centered(panel: Panel):
+    """Print a panel horizontally + vertically centred in the terminal."""
+    # Estimate panel height by rendering to a string buffer of matching width
+    from io import StringIO
+    from rich.console import Console as _C
+    tmp = _C(file=StringIO(), width=panel.width or panel_width(),
+             force_terminal=True, color_system=None)
+    with tmp.capture() as cap:
+        tmp.print(panel)
+    rendered_lines = max(1, cap.get().count("\n"))
+    top_pad = max(0, (console.size.height - rendered_lines) // 2)
     if top_pad:
-        console.print()
+        console.print("\n" * top_pad, end="")
     console.print(Align.center(panel))
+
+
+# ---- Custom menu (renders INSIDE the panel) --------------------------------
+
+def _read_key() -> str:
+    """Read a single keypress. Returns 'up' / 'down' / 'enter' / 'esc' / a char."""
+    if sys.platform == "win32":
+        import msvcrt
+        ch = msvcrt.getch()
+        if ch in (b"\x00", b"\xe0"):
+            ch2 = msvcrt.getch()
+            return {b"H": "up", b"P": "down", b"M": "right", b"K": "left"}.get(ch2, "")
+        if ch == b"\r":
+            return "enter"
+        if ch == b"\x1b":
+            return "esc"
+        try:
+            return ch.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            seq = sys.stdin.read(2)
+            return {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}.get(seq, "esc")
+        if ch in ("\r", "\n"):
+            return "enter"
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def select_in_box(
+    body_above_menu,
+    options: list[tuple[str, object]],
+    footer_hint: str = "↑↓ to navigate, enter to choose, q to quit",
+):
+    """
+    Render `body_above_menu` (e.g. a table) followed by a highlighted menu of
+    `options` inside a centred Catppuccin panel. Block until the user picks
+    one, returns the option's value (or None on q/esc).
+    """
+    selected = 0
+    n = len(options)
+    if n == 0:
+        return None
+
+    while True:
+        # Build menu lines with highlight on `selected`
+        menu = Text()
+        for i, (label, _val) in enumerate(options):
+            if i == selected:
+                menu.append("  ", style=C_PINK)
+                menu.append(f" {label} ",
+                            style=f"bold {C_BG} on {C_PINK}")
+                menu.append("\n")
+            else:
+                menu.append(f"     {label}\n", style=C_FG)
+
+        body = Group(body_above_menu, Text(""), menu) if body_above_menu else menu
+        panel = render_screen(body, footer_hint=footer_hint)
+        clear_screen()
+        print_centered(panel)
+
+        key = _read_key()
+        if key == "up":
+            selected = (selected - 1) % n
+        elif key == "down":
+            selected = (selected + 1) % n
+        elif key == "enter":
+            return options[selected][1]
+        elif key in ("q", "esc"):
+            return None
 
 
 def render_instances_table(insts: list[dict]) -> Table:
@@ -454,89 +541,69 @@ def clear_screen():
 
 def tui_main():
     while True:
-        clear_screen()
         insts = list_instances()
-        print_centered(render_screen(render_instances_table(insts)))
-        console.print()
-
-        choices = []
+        options: list[tuple[str, object]] = []
         for i in insts:
             mark = ICON_DOT_ON if i["active"] == "active" else ICON_DOT_OFF
-            label = f"  {mark}  {i['name']}"
-            choices.append(questionary.Choice(title=label, value=("inst", i["name"])))
-        if insts:
-            choices.append(questionary.Separator("  "))
-        choices.append(questionary.Choice(title=f"  {ICON_PLUS}  new instance",
-                                          value=("new", None)))
-        choices.append(questionary.Choice(title=f"  {ICON_REFRESH}  sync ssh aliases",
-                                          value=("sync", None)))
-        choices.append(questionary.Choice(title=f"  {ICON_BACK}  quit",
-                                          value=("quit", None)))
+            options.append((f"{mark}  {i['name']}", ("inst", i["name"])))
+        options.append((f"{ICON_PLUS}  new instance", ("new", None)))
+        options.append((f"{ICON_REFRESH}  sync ssh aliases", ("sync", None)))
+        options.append((f"{ICON_BACK}  quit", ("quit", None)))
 
-        ans = questionary.select(
-            "What now?",
-            choices=choices,
-            style=QSTYLE,
-            qmark=ICON_CUBE,
-            instruction="(arrows + enter, q to quit)",
-        ).ask()
+        ans = select_in_box(render_instances_table(insts), options)
 
         if ans is None or ans[0] == "quit":
-            console.print(f"[muted]bye[/muted]")
+            clear_screen()
+            console.print("[muted]bye[/muted]")
             return
         if ans[0] == "new":
             tui_create()
         elif ans[0] == "sync":
             ok, msg = sync_ssh()
+            clear_screen()
             console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
             input("press enter to continue...")
         elif ans[0] == "inst":
             tui_instance_menu(ans[1])
 
 
+def render_instance_info(name: str, i: dict) -> Text:
+    info = Text()
+    info.append(f"{ICON_CUBE} ", style=C_MAUVE)
+    info.append(f"{name}\n\n", style="instance")
+    info.append("  status   ", style="muted")
+    info.append(f"{i['active']}\n",
+                style="ok" if i["active"] == "active" else "warn")
+    info.append("  tmux     ", style="muted")
+    info.append(f"{'alive' if i['tmux_alive'] else 'not running'}\n",
+                style="ok" if i["tmux_alive"] else "err")
+    info.append("  workdir  ", style="muted")
+    info.append(f"{i['workdir']}\n", style="value")
+    info.append("  url      ", style="muted")
+    info.append(i["url"] or "(none captured)", style="url" if i["url"] else "muted")
+    return info
+
+
 def tui_instance_menu(name: str):
     while True:
         i = next((x for x in list_instances() if x["name"] == name), None)
         if not i:
+            clear_screen()
             console.print(f"[err]instance {name} no longer exists[/err]")
             input("press enter...")
             return
 
-        clear_screen()
-
-        info = Text()
-        info.append(f"{ICON_CUBE} ", style=C_MAUVE)
-        info.append(f"{name}\n\n", style="instance")
-        info.append(f"  status   ", style="muted")
-        info.append(f"{i['active']}\n",
-                    style="ok" if i["active"] == "active" else "warn")
-        info.append(f"  tmux     ", style="muted")
-        info.append(f"{'alive' if i['tmux_alive'] else 'not running'}\n",
-                    style="ok" if i["tmux_alive"] else "err")
-        info.append(f"  workdir  ", style="muted")
-        info.append(f"{i['workdir']}\n", style="value")
-        info.append(f"  url      ", style="muted")
-        info.append(i["url"] or "(none captured)", style="url" if i["url"] else "muted")
-
-        print_centered(render_screen(info))
-        console.print()
-
-        ans = questionary.select(
-            f"Action for {name}",
-            choices=[
-                questionary.Choice(title=f"  {ICON_TMUX} attach (Ctrl+b d to detach)", value="attach"),
-                questionary.Choice(title=f"  {ICON_LINK} show last claude.ai url", value="url"),
-                questionary.Choice(title=f"  {ICON_REFRESH} restart (kills convo, fresh url)", value="restart"),
-                questionary.Choice(title=f"  {ICON_STOP} stop", value="stop"),
-                questionary.Separator(f"  "),
-                questionary.Choice(title=f"  {ICON_TRASH} remove (keep workdir)", value="remove"),
-                questionary.Choice(title=f"  {ICON_TRASH} remove + purge workdir", value="purge"),
-                questionary.Separator(f"  "),
-                questionary.Choice(title=f"  {ICON_BACK} back", value="back"),
-            ],
-            style=QSTYLE,
-            qmark=ICON_CUBE,
-        ).ask()
+        info = render_instance_info(name, i)
+        options = [
+            (f"{ICON_TMUX}  attach (Ctrl+b d to detach)", "attach"),
+            (f"{ICON_LINK}  show last claude.ai url", "url"),
+            (f"{ICON_REFRESH}  restart (kills convo, fresh url)", "restart"),
+            (f"{ICON_STOP}  stop", "stop"),
+            (f"{ICON_TRASH}  remove (keep workdir)", "remove"),
+            (f"{ICON_TRASH}  remove + purge workdir", "purge"),
+            (f"{ICON_BACK}  back", "back"),
+        ]
+        ans = select_in_box(info, options)
 
         if ans is None or ans == "back":
             return
@@ -544,34 +611,49 @@ def tui_instance_menu(name: str):
             os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{name}"])
         elif ans == "url":
             url = last_url(name) or "(no URL captured yet - try restarting)"
-            console.print(Panel(Text(url, style="url"),
-                                title=f"[title]url for {name}[/title]",
-                                border_style=C_SAPPHIRE, box=ROUNDED, padding=(1, 2)))
-            input("press enter to continue...")
+            clear_screen()
+            print_centered(render_screen(Text(url, style="url", justify="center")))
+            input("\npress enter to continue...")
         elif ans == "restart":
+            clear_screen()
             with console.status(f"[info]restarting {name}...[/info]", spinner="dots"):
                 ok, msg = restart_instance(name)
             console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
             input("press enter to continue...")
         elif ans == "stop":
+            clear_screen()
             ok, msg = stop_instance(name)
             console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
             input("press enter to continue...")
         elif ans == "remove":
-            if questionary.confirm(f"Remove {name}? (workdir kept)",
-                                    default=False, style=QSTYLE).ask():
+            confirm = select_in_box(
+                Text(f"Remove {name}? Workdir will be kept.",
+                     style="warn", justify="center"),
+                [(f"{ICON_CROSS}  no, cancel", False),
+                 (f"{ICON_CHECK}  yes, remove", True)],
+                footer_hint="↑↓ to choose, enter to confirm",
+            )
+            if confirm:
+                clear_screen()
                 ok, msg = remove_instance(name, purge_workdir=False)
                 console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
                 input("press enter to continue...")
                 return
         elif ans == "purge":
-            console.print(Panel(
-                Text(f"This will DELETE the workdir directory for {name}.\n"
-                     f"Workdir: {i['workdir']}\nThis is destructive and irreversible.",
-                     style="err"),
-                border_style=C_RED, box=ROUNDED, title=f"[title]{ICON_WARN} purge[/title]",
-                padding=(1, 2)))
-            if questionary.confirm("Really purge?", default=False, style=QSTYLE).ask():
+            warn = Text()
+            warn.append(f"{ICON_WARN} DESTRUCTIVE\n\n", style="err")
+            warn.append(f"This will DELETE the workdir for {name}.\n", style="value")
+            warn.append(f"Workdir: ", style="muted")
+            warn.append(f"{i['workdir']}\n\n", style="value")
+            warn.append("Irreversible.", style="err")
+            confirm = select_in_box(
+                warn,
+                [(f"{ICON_CROSS}  no, cancel", False),
+                 (f"{ICON_TRASH}  yes, PURGE", True)],
+                footer_hint="↑↓ to choose, enter to confirm",
+            )
+            if confirm:
+                clear_screen()
                 ok, msg = remove_instance(name, purge_workdir=True)
                 console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
                 input("press enter to continue...")
@@ -594,20 +676,16 @@ def tui_create():
         return
     name = name.strip()
 
-    kind = questionary.select(
-        f"Where should '{name}' run?",
-        choices=[
-            questionary.Choice(title=f"  {ICON_FOLDER} new empty dir at {DEV_ROOT}/{name}",
-                               value="new"),
-            questionary.Choice(title=f"  {ICON_FOLDER} an existing directory",
-                               value="exist"),
-            questionary.Choice(title=f"  {ICON_GIT} git clone a repo and run there",
-                               value="clone"),
-            questionary.Choice(title=f"  {ICON_FOLDER} default workspace ({DEFAULT_WORKDIR})",
-                               value="root"),
+    kind = select_in_box(
+        Text(f"Where should '{name}' run?",
+             style="title", justify="center"),
+        [
+            (f"{ICON_FOLDER}  new empty dir at {DEV_ROOT}/{name}", "new"),
+            (f"{ICON_FOLDER}  an existing directory", "exist"),
+            (f"{ICON_GIT}  git clone a repo and run there", "clone"),
+            (f"{ICON_FOLDER}  default workspace ({DEFAULT_WORKDIR})", "root"),
         ],
-        style=QSTYLE, qmark=ICON_FOLDER,
-    ).ask()
+    )
     if kind is None:
         return
 
@@ -636,11 +714,16 @@ def tui_create():
         ok, msg = start_instance(name, workdir, clone_url=clone_url)
     console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
 
-    if ok and questionary.confirm(
-        f"Attach to {name}'s tmux session now? (Ctrl+b d to detach)",
-        default=True, style=QSTYLE,
-    ).ask():
-        os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{name}"])
+    if ok:
+        attach = select_in_box(
+            Text(f"Attach to {name}'s tmux session now? (Ctrl+b d to detach)",
+                 style="title", justify="center"),
+            [(f"{ICON_TMUX}  yes, attach", True),
+             (f"{ICON_BACK}  no, back to menu", False)],
+            footer_hint="↑↓ to choose, enter to confirm",
+        )
+        if attach:
+            os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{name}"])
     else:
         input("press enter to continue...")
 
