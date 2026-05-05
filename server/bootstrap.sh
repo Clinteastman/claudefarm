@@ -265,7 +265,7 @@ cat <<EOF
 
     ${B}5.${N} On your desktop ~/.ssh/config, add a single Include line so
          every machine's instances appear as SSH aliases:
-         ${S}Include $REPO_PATH/desktop/claude-instances-*.cfg${N}
+         ${S}Include $REPO_PATH/client/claude-instances-*.cfg${N}
 
   ${S}For the cheatsheet of commands and tmux key bindings: type ${N}${B}cheatsheet${N}
 

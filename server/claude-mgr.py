@@ -25,13 +25,14 @@ USAGE:
   claude-mgr sync-ssh
 
 SSH ALIAS SYNC:
-  start/stop/remove auto-update {repo}/desktop/claude-instances.cfg with the
-  current set of instances. Desktops Include that file in their ~/.ssh/config
-  to get auto-updated `ssh claude-<instance>` aliases. After the file changes,
-  commit + push the homelab repo and have the desktop pull to receive the
-  new aliases.
+  start/stop/remove auto-update {repo}/client/claude-instances-<host>.cfg
+  with the current set of instances. Clients Include that glob from their
+  ~/.ssh/config to get auto-updated `ssh claude-<host>-<instance>` aliases.
+  After the file changes, commit + push and have clients `git pull` to
+  receive the new aliases.
 
-  Set CLAUDEFARM_REPO env var to override the default repo path.
+  Set CLAUDEFARM_REPO env var to override the default repo path
+  (default: /data/dev/claudefarm).
 """
 from __future__ import annotations
 
@@ -47,16 +48,17 @@ from pathlib import Path
 # ---- third-party (rich + questionary) ----------------------------------------
 # Bail with a clear message if the deps aren't installed yet.
 try:
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.table import Table
     from rich.panel import Panel
     from rich.text import Text
     from rich.theme import Theme
-    from rich.box import ROUNDED
+    from rich.box import ROUNDED, HEAVY
     from rich.live import Live
     from rich.spinner import Spinner
     from rich.align import Align
     from rich.padding import Padding
+    from rich.rule import Rule
     import questionary
     from questionary import Style as QStyle
     from prompt_toolkit.formatted_text import HTML
@@ -72,7 +74,7 @@ except ImportError as e:
 DEV_ROOT = Path("/data/dev")
 DROPIN_DIR = Path("/etc/systemd/system")
 DEFAULT_WORKDIR = "/root"
-HOMELAB_REPO = Path(os.environ.get("CLAUDEFARM_REPO", "/data/dev/claudefarm"))
+FARM_REPO = Path(os.environ.get("CLAUDEFARM_REPO", "/data/dev/claudefarm"))
 SSH_TARGET_HOST = os.environ.get("CLAUDE_MGR_LAN_IP", "192.168.50.62")
 SSH_TARGET_USER = os.environ.get("CLAUDE_MGR_SSH_USER", "root")
 RESTART_HOST = os.environ.get("CLAUDE_MGR_RESTART_HOST", "192.168.50.55")
@@ -290,9 +292,9 @@ def remove_instance(name: str, purge_workdir: bool = False) -> tuple[bool, str]:
 # ---- SSH alias sync ---------------------------------------------------------
 
 def sync_ssh() -> tuple[bool, str]:
-    if not HOMELAB_REPO.is_dir():
-        return False, f"homelab repo not found at {HOMELAB_REPO} (set CLAUDEFARM_REPO env var)"
-    out = HOMELAB_REPO / "desktop" / f"claude-instances-{HOSTNAME_TAG}.cfg"
+    if not FARM_REPO.is_dir():
+        return False, f"homelab repo not found at {FARM_REPO} (set CLAUDEFARM_REPO env var)"
+    out = FARM_REPO / "client" / f"claude-instances-{HOSTNAME_TAG}.cfg"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     insts = list_instances()
@@ -353,13 +355,45 @@ def state_icon(i: dict) -> Text:
     return Text(f"{ICON_DOT_OFF}", style=C_OVERLAY)
 
 
-def render_header() -> Panel:
-    title = Text()
+PANEL_WIDTH = 100  # cap so the TUI doesn't span ultra-wide terminals
+
+
+def render_header() -> Text:
+    title = Text(justify="center")
     title.append(f"{ICON_SERVER} ", style=C_LAVENDER)
     title.append("claude-mgr", style="title")
     title.append("  on  ", style="muted")
     title.append(HOSTNAME_TAG, style="host")
-    return Panel(Align.center(title), border_style=C_MAUVE, box=ROUNDED, padding=(0, 1))
+    return title
+
+
+def render_footer(hint: str = "use the menu below") -> Text:
+    foot = Text(justify="center", style="muted")
+    foot.append(hint)
+    return foot
+
+
+def render_screen(body) -> Panel:
+    """Wrap a body renderable in the header / body / footer Panel layout."""
+    inner = Group(
+        render_header(),
+        Rule(style=C_SURFACE1),
+        body,
+    )
+    return Panel(
+        inner,
+        border_style=C_MAUVE,
+        box=ROUNDED,
+        padding=(1, 2),
+        width=PANEL_WIDTH,
+    )
+
+
+def print_centered(panel: Panel, top_pad: int = 1):
+    """Print a panel horizontally centred with some breathing space above."""
+    if top_pad:
+        console.print()
+    console.print(Align.center(panel))
 
 
 def render_instances_table(insts: list[dict]) -> Table:
@@ -421,9 +455,8 @@ def clear_screen():
 def tui_main():
     while True:
         clear_screen()
-        console.print(render_header())
         insts = list_instances()
-        console.print(render_instances_table(insts))
+        print_centered(render_screen(render_instances_table(insts)))
         console.print()
 
         choices = []
@@ -470,7 +503,6 @@ def tui_instance_menu(name: str):
             return
 
         clear_screen()
-        console.print(render_header())
 
         info = Text()
         info.append(f"{ICON_CUBE} ", style=C_MAUVE)
@@ -486,8 +518,7 @@ def tui_instance_menu(name: str):
         info.append(f"  url      ", style="muted")
         info.append(i["url"] or "(none captured)", style="url" if i["url"] else "muted")
 
-        console.print(Panel(info, border_style=C_MAUVE, box=ROUNDED,
-                            title=f"[title]instance[/title]", padding=(1, 2)))
+        print_centered(render_screen(info))
         console.print()
 
         ans = questionary.select(
@@ -549,9 +580,8 @@ def tui_instance_menu(name: str):
 
 def tui_create():
     clear_screen()
-    console.print(render_header())
-    console.print(Panel(Text("Create a new Claude Code instance", style="title"),
-                        border_style=C_MAUVE, box=ROUNDED, padding=(0, 2)))
+    body = Text("Create a new Claude Code instance", style="title", justify="center")
+    print_centered(render_screen(body))
     console.print()
 
     name = questionary.text(
@@ -618,8 +648,7 @@ def tui_create():
 
 def cmd_list(args):
     insts = list_instances()
-    console.print(render_header())
-    console.print(render_instances_table(insts))
+    print_centered(render_screen(render_instances_table(insts)))
 
 
 def cmd_start(args):
