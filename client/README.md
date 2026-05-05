@@ -266,6 +266,116 @@ FiraCode Nerd Font.
 
 The colours work without a Nerd Font - only the icons render as boxes.
 
+## Pasting screenshots into a remote Claude (paste-image hotkey)
+
+Claude Code's `Alt+V` paste-image shortcut works on a **local** Claude
+because it reads your OS clipboard. Over SSH it can't see your client's
+clipboard, so this bundle ships a hotkey-driven workaround:
+
+1. Take a screenshot the way you always do (Win+Shift+S, PrtSc, Spectacle,
+   Cmd+Shift+4 + Ctrl-to-clipboard, etc).
+2. Press your bound hotkey.
+3. The image is SCP'd to `<server>:/data/dev/_paste/<timestamp>.png` and the
+   path is typed into the focused window (your Claude SSH session in tmux).
+4. Hit Enter, ask Claude to look at it.
+
+End-to-end ~2 seconds. The path is also copied to your clipboard as a
+fallback in case auto-type lost focus. Files auto-expire after 7 days.
+
+### Windows
+
+The PowerShell script `paste-image.ps1` does the work; bind it to a hotkey
+via either of these:
+
+**Option A: AutoHotkey (recommended)**
+
+1. Install AutoHotkey v2 from https://www.autohotkey.com/v2/
+2. Edit `paste-image.ahk` if your repo is somewhere other than `~/github/claudefarm`
+3. Double-click `paste-image.ahk` to load. Drop a shortcut into
+   `shell:startup` (Win+R) for autoload at login.
+
+Default hotkey: **Ctrl+Alt+V**.
+
+**Option B: PowerToys Keyboard Manager**
+
+1. Install Microsoft PowerToys from https://aka.ms/powertoys
+2. Settings -> Keyboard Manager -> Remap shortcut
+3. Map your hotkey of choice to: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\<you>\github\claudefarm\client\paste-image.ps1"`
+
+### Linux
+
+Install the right clipboard + auto-type tools for your session:
+
+```bash
+# X11 (most distros, GNOME-on-Xorg, i3, etc.)
+sudo apt install xclip xdotool
+
+# Wayland (GNOME 40+, Sway, KDE Wayland session)
+sudo apt install wl-clipboard wtype
+```
+
+Bind the hotkey via your DE:
+
+| DE | Where |
+|---|---|
+| GNOME | Settings -> Keyboard -> Custom Shortcuts -> Add. Command: `~/github/claudefarm/client/paste-image.sh` |
+| KDE | System Settings -> Shortcuts -> Custom Shortcuts -> Edit -> New -> Global Shortcut -> Command/URL |
+| i3/sway | `bindsym Ctrl+Mod1+v exec ~/github/claudefarm/client/paste-image.sh` in your config |
+| XFCE | Settings -> Keyboard -> Application Shortcuts -> Add |
+
+Suggested hotkey: **Ctrl+Alt+V** (avoid `Alt+V` since some terminals or
+apps may already use it).
+
+### macOS
+
+Install nothing - `osascript` and `pbpaste`/`pbcopy` ship with macOS.
+Bind the hotkey via:
+
+**Option A: Raycast / Alfred / Hammerspoon**
+Bind a hotkey to run `~/github/claudefarm/client/paste-image.sh`.
+
+**Option B: Built-in Automator + System Settings**
+1. Automator -> New -> Quick Action
+2. Add "Run Shell Script" -> `~/github/claudefarm/client/paste-image.sh`
+3. Save as "Paste image to claudefarm"
+4. System Settings -> Keyboard -> Keyboard Shortcuts -> Services -> bind a hotkey
+
+You'll likely need to grant **Accessibility** permission to your terminal
+the first time auto-type runs (System Settings -> Privacy & Security ->
+Accessibility) - macOS prompts for it.
+
+### Configuration (all platforms)
+
+Defaults target K12 (`192.168.50.62`, root, `/data/dev/_paste`). Override via
+env vars (Linux/macOS) or script parameters (Windows):
+
+```bash
+# Linux/macOS - export before running, e.g. via your shortcut command
+PASTE_SERVER_HOST=10.0.0.5 PASTE_SERVER_USER=pi ~/github/claudefarm/client/paste-image.sh
+```
+
+```powershell
+# Windows - pass as parameters
+.\paste-image.ps1 -ServerHost 10.0.0.5 -ServerUser pi -RemoteDir /tmp/paste
+```
+
+### Troubleshooting
+
+**"SCP to ... failed"** - your pubkey isn't on the server. Re-run
+`setup-client.sh` / `setup-client.ps1` (it offers to copy your key) or
+do it manually with `ssh-copy-id`.
+
+**Path appears in the wrong window** - SendKeys / xdotool types into
+whatever window has focus when the script finishes. Make sure you don't
+click away after pressing the hotkey. The path is also on your clipboard
+- just `Ctrl+V` it where you actually wanted it.
+
+**"no image on the clipboard"** - your screenshot tool put the image in
+some other format than PNG. Win+Shift+S → screenshot toolbar → click the
+notification (which keeps it on clipboard) usually works. Some Linux
+screenshot tools save to file but don't put on clipboard - check tool
+settings.
+
 ## Optional: local Claude statusline
 
 `claude-statusline.py` in this directory is a Catppuccin Mocha statusline
