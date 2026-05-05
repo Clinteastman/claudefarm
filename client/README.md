@@ -294,7 +294,12 @@ via either of these:
 3. Double-click `paste-image.ahk` to load. Drop a shortcut into
    `shell:startup` (Win+R) for autoload at login.
 
-Default hotkey: **Ctrl+Alt+V**.
+Default hotkey: **Win+Shift+V**.
+
+> **Why not Ctrl+Alt+V?** On UK / international keyboards Windows treats
+> Ctrl+Alt as AltGr, and AltGr+V types ®. If the script ever fails to
+> load you'd accidentally spam ® into your terminal. Win+Shift+V has no
+> default OS binding so it's safe regardless.
 
 **Option B: PowerToys Keyboard Manager**
 
@@ -323,8 +328,8 @@ Bind the hotkey via your DE:
 | i3/sway | `bindsym Ctrl+Mod1+v exec ~/github/claudefarm/client/paste-image.sh` in your config |
 | XFCE | Settings -> Keyboard -> Application Shortcuts -> Add |
 
-Suggested hotkey: **Ctrl+Alt+V** (avoid `Alt+V` since some terminals or
-apps may already use it).
+Suggested hotkey: **Super+Shift+V** (avoids the AltGr+V conflict that
+generates ® on UK / international layouts).
 
 ### macOS
 
