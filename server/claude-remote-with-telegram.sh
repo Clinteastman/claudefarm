@@ -34,9 +34,17 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 # (or environment file) and ssh in once to accept trust on first run.
 cd "$WORKDIR"
 
-# `tmux -e` propagates the env var into the new session so the Claude
-# Code statusline can show which K12 instance is running here.
-tmux new-session -d -s "$SESSION" -e "CLAUDE_INSTANCE=$INSTANCE" "claude --name \"$SESSION_NAME\""
+# Build a list of -e flags so any env var the systemd unit handed us
+# (CLAUDE_*, PREVIEW_*, TELEGRAM_*) reaches the new tmux session and
+# therefore Claude. Without this, only what we name explicitly survives -
+# tmux servers shared across instances don't auto-propagate the wrapper's
+# env to new sessions.
+TMUX_ENV_ARGS=(-e "CLAUDE_INSTANCE=$INSTANCE")
+while IFS= read -r _name; do
+    [ -n "${_name:-}" ] && TMUX_ENV_ARGS+=(-e "${_name}=${!_name}")
+done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_)/ {print $1}')
+
+tmux new-session -d -s "$SESSION" "${TMUX_ENV_ARGS[@]}" "claude --name \"$SESSION_NAME\""
 tmux set-option -t "$SESSION" -g window-size latest 2>/dev/null || true
 tmux set-option -t "$SESSION" -w aggressive-resize on 2>/dev/null || true
 
