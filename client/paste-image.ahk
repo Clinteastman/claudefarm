@@ -2,14 +2,11 @@
 ; screenshot lands on the claudefarm server and its remote path gets
 ; typed into the focused window. Designed for AutoHotkey v2.
 ;
-; Default hotkey:  Ctrl+Shift+Alt+V
+; Default hotkey:  Win+Shift+V
 ;
-;   Why three modifiers?  Single + double-modifier combos all clash
-;   somewhere on Windows: Ctrl+Alt+V = AltGr+V = R on UK/intl
-;   keyboards. Win+V = clipboard history. Win+Shift+V = notification
-;   cycling on newer Win11 builds. Ctrl+Shift+V = paste in many apps.
-;   Three modifiers + V is unbound everywhere, can't generate a stray
-;   character if AHK isn't loaded, and is still one chord to press.
+;   Avoids Ctrl+Alt+V (= AltGr+V = R on UK/intl keyboards) and the
+;   terminal's Ctrl+Shift+V paste binding. AHK's k-hook intercepts
+;   Win+Shift+V before any default Windows behaviour can fire.
 ;
 ; Install AutoHotkey v2 from https://www.autohotkey.com/v2/
 ; Then double-click this file to load. Drop a shortcut into
@@ -25,7 +22,7 @@
 SCRIPT_PATH := A_ScriptDir . "\paste-image.ps1"
 LOG_PATH    := A_Temp . "\claudefarm-paste-image.log"
 
-^+!v::  ; Ctrl+Shift+Alt+V
+#+v::  ; Win+Shift+V
 {
     ; Quick visual confirmation the hotkey fired (sound + tray tip).
     SoundBeep 1000, 80
