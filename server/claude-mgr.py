@@ -261,7 +261,8 @@ def ensure_venv(workdir: str) -> str | None:
 
 
 def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
-                   clone_url: str | None = None) -> tuple[bool, str]:
+                   clone_url: str | None = None,
+                   create_venv: bool = True) -> tuple[bool, str]:
     if not re.fullmatch(r"[a-z][a-z0-9_-]*", name):
         return False, f"invalid name '{name}': lowercase letters, digits, _, - only"
 
@@ -277,7 +278,7 @@ def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
 
     Path(workdir).mkdir(parents=True, exist_ok=True)
 
-    venv_msg = ensure_venv(workdir)
+    venv_msg = ensure_venv(workdir) if create_venv else None
 
     if workdir != DEFAULT_WORKDIR:
         write_workdir_dropin(name, workdir)
@@ -293,6 +294,21 @@ def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
     return True, msg
 
 
+def has_venv(workdir: str) -> bool:
+    return (Path(workdir) / ".venv" / "bin" / "activate").is_file()
+
+
+def add_venv(name: str) -> tuple[bool, str]:
+    """Create .venv in this instance's workdir if it doesn't already have one."""
+    workdir = read_workdir(name)
+    if Path(workdir).resolve() == Path(DEFAULT_WORKDIR).resolve():
+        return False, f"instance '{name}' uses {DEFAULT_WORKDIR} - venv would clutter root, skipping"
+    if has_venv(workdir):
+        return False, f"instance '{name}' already has a venv at {workdir}/.venv"
+    msg = ensure_venv(workdir)
+    return msg is not None and "FAILED" not in (msg or ""), msg or "no venv created"
+
+
 def clean_venv(name: str) -> tuple[bool, str]:
     """Nuke + recreate <workdir>/.venv for an instance (e.g. when deps got
     wedged). Doesn't restart the instance - shells launched after will pick up
@@ -305,6 +321,18 @@ def clean_venv(name: str) -> tuple[bool, str]:
         shutil.rmtree(venv)
     msg = ensure_venv(workdir)
     return True, f"cleaned venv for {name}: {msg}"
+
+
+def purge_venv(name: str) -> tuple[bool, str]:
+    """Delete <workdir>/.venv with no replacement - the instance will fall
+    back to system Python on next restart. Use when you want to opt this
+    instance OUT of having its own venv."""
+    workdir = read_workdir(name)
+    venv = Path(workdir) / ".venv"
+    if not venv.is_dir():
+        return False, f"no venv at {venv} - nothing to purge"
+    shutil.rmtree(venv)
+    return True, f"purged {venv} (instance will use system Python on next restart)"
 
 
 def stop_instance(name: str) -> tuple[bool, str]:
@@ -634,12 +662,21 @@ def tui_instance_menu(name: str):
             return
 
         info = render_instance_info(name, i)
+        venv_exists = has_venv(i["workdir"])
+        is_default_wd = (Path(i["workdir"]).resolve() == Path(DEFAULT_WORKDIR).resolve())
         options = [
             (f"{ICON_TMUX}  attach (Ctrl+b d to detach)", "attach"),
             (f"{ICON_LINK}  show last claude.ai url", "url"),
             (f"{ICON_REFRESH}  restart (kills convo, fresh url)", "restart"),
             (f"{ICON_STOP}  stop", "stop"),
-            (f"{ICON_REFRESH}  rebuild .venv (uv venv from scratch)", "clean-venv"),
+        ]
+        if not is_default_wd:
+            if venv_exists:
+                options.append((f"{ICON_REFRESH}  rebuild .venv (uv venv from scratch)", "clean-venv"))
+                options.append((f"{ICON_TRASH}  purge .venv (fall back to system Python)", "purge-venv"))
+            else:
+                options.append((f"{ICON_PLUS}  add .venv (auto-activate on next restart)", "add-venv"))
+        options += [
             (f"{ICON_TRASH}  remove (keep workdir)", "remove"),
             (f"{ICON_TRASH}  remove + purge workdir", "purge"),
             (f"{ICON_BACK}  back", "back"),
@@ -673,6 +710,26 @@ def tui_instance_menu(name: str):
             console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
             console.print("[muted]any deps that were installed are gone - re-install via pip / uv pip from inside the instance[/muted]")
             input("press enter to continue...")
+        elif ans == "add-venv":
+            clear_screen()
+            with console.status(f"[info]creating venv for {name}...[/info]", spinner="dots"):
+                ok, msg = add_venv(name)
+            console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
+            console.print("[muted]restart the instance for the wrapper to pick it up[/muted]")
+            input("press enter to continue...")
+        elif ans == "purge-venv":
+            confirm = select_in_box(
+                Text(f"Purge .venv for {name}?\nThe instance will use system Python on next restart.",
+                     style="warn", justify="center"),
+                [(f"{ICON_CROSS}  no, cancel", False),
+                 (f"{ICON_TRASH}  yes, purge", True)],
+                footer_hint="↑↓ to choose, enter to confirm",
+            )
+            if confirm:
+                clear_screen()
+                ok, msg = purge_venv(name)
+                console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
+                input("press enter to continue...")
         elif ans == "remove":
             confirm = select_in_box(
                 Text(f"Remove {name}? Workdir will be kept.",
@@ -758,8 +815,24 @@ def tui_create():
         if not workdir:
             return
 
+    # Per-instance Python venv? Skip for the default /root workdir (it's the
+    # throwaway slot, no need to clutter root with .venv).
+    create_venv = False
+    if workdir != DEFAULT_WORKDIR:
+        venv_choice = select_in_box(
+            Text("Give this instance its own Python venv?",
+                 style="title", justify="center"),
+            [(f"{ICON_CHECK}  yes - isolate pip installs (recommended)", True),
+             (f"{ICON_CROSS}  no - use system Python", False)],
+            footer_hint="↑↓ to choose, enter to confirm",
+        )
+        if venv_choice is None:
+            return
+        create_venv = venv_choice
+
     with console.status(f"[info]starting {name}...[/info]", spinner="dots"):
-        ok, msg = start_instance(name, workdir, clone_url=clone_url)
+        ok, msg = start_instance(name, workdir, clone_url=clone_url,
+                                  create_venv=create_venv)
     console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
 
     if ok:
@@ -783,7 +856,11 @@ def cmd_list(args):
 
 
 def cmd_start(args):
-    ok, msg = start_instance(args.name, args.workdir or DEFAULT_WORKDIR, args.clone)
+    create_venv = True
+    if args.no_venv:
+        create_venv = False
+    ok, msg = start_instance(args.name, args.workdir or DEFAULT_WORKDIR,
+                              args.clone, create_venv=create_venv)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
 
@@ -830,6 +907,18 @@ def cmd_clean_venv(args):
     sys.exit(0 if ok else 1)
 
 
+def cmd_add_venv(args):
+    ok, msg = add_venv(args.name)
+    console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_purge_venv(args):
+    ok, msg = purge_venv(args.name)
+    console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
+    sys.exit(0 if ok else 1)
+
+
 def main():
     if len(sys.argv) == 1:
         if not sys.stdout.isatty():
@@ -845,7 +934,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = p.add_subparsers(dest="cmd", required=True)
     sp.add_parser("list").set_defaults(func=cmd_list)
-    s = sp.add_parser("start"); s.add_argument("name"); s.add_argument("--workdir"); s.add_argument("--clone"); s.set_defaults(func=cmd_start)
+    s = sp.add_parser("start"); s.add_argument("name"); s.add_argument("--workdir"); s.add_argument("--clone"); s.add_argument("--no-venv", action="store_true", help="skip auto-creating <workdir>/.venv"); s.set_defaults(func=cmd_start)
     s = sp.add_parser("stop"); s.add_argument("name"); s.set_defaults(func=cmd_stop)
     s = sp.add_parser("restart"); s.add_argument("name"); s.set_defaults(func=cmd_restart)
     s = sp.add_parser("attach"); s.add_argument("name"); s.set_defaults(func=cmd_attach)
@@ -853,6 +942,8 @@ def main():
     s = sp.add_parser("remove"); s.add_argument("name"); s.add_argument("--purge-workdir", action="store_true"); s.set_defaults(func=cmd_remove)
     sp.add_parser("sync-ssh").set_defaults(func=cmd_sync_ssh)
     s = sp.add_parser("clean-venv", help="nuke + recreate the .venv in this instance's workdir"); s.add_argument("name"); s.set_defaults(func=cmd_clean_venv)
+    s = sp.add_parser("add-venv",   help="create .venv for an instance that doesn't have one yet"); s.add_argument("name"); s.set_defaults(func=cmd_add_venv)
+    s = sp.add_parser("purge-venv", help="delete .venv (instance falls back to system Python)"); s.add_argument("name"); s.set_defaults(func=cmd_purge_venv)
     args = p.parse_args()
     args.func(args)
 
