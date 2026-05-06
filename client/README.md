@@ -266,21 +266,30 @@ FiraCode Nerd Font.
 
 The colours work without a Nerd Font - only the icons render as boxes.
 
-## Pasting screenshots into a remote Claude (paste-image hotkey)
+## Pasting screenshots OR files into a remote Claude (paste-image hotkey)
 
-Claude Code's `Alt+V` paste-image shortcut works on a **local** Claude
-because it reads your OS clipboard. Over SSH it can't see your client's
-clipboard, so this bundle ships a hotkey-driven workaround:
+Claude Code's local Alt+V (paste image) and drag-drop (paste file) only
+work when Claude is running locally - over SSH the remote Claude can't
+see your client's clipboard or local files. This bundle ships one hotkey
+that handles both cases:
 
+**Screenshots**:
 1. Take a screenshot the way you always do (Win+Shift+S, PrtSc, Spectacle,
    Cmd+Shift+4 + Ctrl-to-clipboard, etc).
-2. Press your bound hotkey.
-3. The image is SCP'd to `<server>:/data/dev/_paste/<timestamp>.png` and the
-   path is typed into the focused window (your Claude SSH session in tmux).
-4. Hit Enter, ask Claude to look at it.
+2. Press the bound hotkey.
+3. PNG is SCP'd to `<server>:/data/dev/_paste/<timestamp>.png` and the
+   path is typed into the focused window.
 
-End-to-end ~2 seconds. The path is also copied to your clipboard as a
-fallback in case auto-type lost focus. Files auto-expire after 7 days.
+**Files** (CSVs, zips, PDFs, anything you'd normally drag-drop into Claude):
+1. Select file(s) in your file manager and Ctrl+C (or Cmd+C on Mac).
+2. Press the same hotkey.
+3. Each file is SCP'd to `<server>:/data/dev/_paste/<ts>-N-<original-name>`
+   and the paths get typed in space-separated.
+
+Either way: hit Enter, ask Claude to look at it. End-to-end ~2 seconds for
+small files, longer for big ones. Path(s) also land on your clipboard as
+a fallback. Server-side `/data/dev/_paste/` auto-cleans files older than 7
+days, so the staging area never balloons.
 
 ### Windows
 

@@ -68,30 +68,68 @@ case "$uname_s" in
         ;;
 esac
 
-# ---- 2. pull image from clipboard to a temp file ---------------------------
+# ---- 2. detect what's on the clipboard + collect local files to upload -----
 
 TS="$(date +%Y%m%d-%H%M%S)-$RANDOM"
-LOCAL_PATH="$(mktemp -d)/claude-paste-${TS}.png"
+TMPDIR_LOCAL="$(mktemp -d)"
+LOCAL_FILES=()      # array of (local_path, remote_basename) pairs, flat
 
-case "$PLATFORM" in
-    x11)
-        command -v xclip >/dev/null 2>&1 || { notify "xclip not installed (sudo apt install xclip)"; exit 1; }
-        if ! xclip -selection clipboard -t image/png -o > "$LOCAL_PATH" 2>/dev/null; then
-            notify "no image on the clipboard. Take a screenshot first."
-            rm -f "$LOCAL_PATH"; exit 1
-        fi
-        ;;
-    wayland)
-        command -v wl-paste >/dev/null 2>&1 || { notify "wl-paste not installed (sudo apt install wl-clipboard)"; exit 1; }
-        if ! wl-paste --type image/png > "$LOCAL_PATH" 2>/dev/null; then
-            notify "no image on the clipboard. Take a screenshot first."
-            rm -f "$LOCAL_PATH"; exit 1
-        fi
-        ;;
-    macos)
-        # macOS pbpaste doesn't natively support binary - use AppleScript
-        # to dump clipboard image to file via NSPasteboard.
-        if ! osascript - "$LOCAL_PATH" >/dev/null 2>&1 <<'OSA'
+# Returns 0 if files on clipboard, fills LOCAL_FILES with originals.
+collect_clipboard_files() {
+    local uris
+    case "$PLATFORM" in
+        x11)
+            uris="$(xclip -selection clipboard -t text/uri-list -o 2>/dev/null)" || return 1
+            ;;
+        wayland)
+            uris="$(wl-paste --type text/uri-list 2>/dev/null)" || return 1
+            ;;
+        macos)
+            uris="$(osascript -e 'try
+                set theFiles to the clipboard as «class furl»
+                if class of theFiles is list then
+                    set out to ""
+                    repeat with f in theFiles
+                        set out to out & POSIX path of f & linefeed
+                    end repeat
+                    return out
+                else
+                    return POSIX path of theFiles
+                end if
+            on error
+                return ""
+            end try' 2>/dev/null)" || return 1
+            ;;
+    esac
+    [ -z "$uris" ] && return 1
+    local i=0
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        [ -z "$line" ] && continue
+        local p="$line"
+        # X11/Wayland give file:// URIs - strip the prefix
+        case "$p" in
+            file://*) p="$(printf '%b' "${p#file://}" | sed 's/%20/ /g')" ;;
+        esac
+        [ -f "$p" ] || continue   # skip directories
+        i=$((i + 1))
+        LOCAL_FILES+=("$p" "${TS}-${i}-$(basename "$p")")
+    done <<<"$uris"
+    [ "${#LOCAL_FILES[@]}" -gt 0 ]
+}
+
+# Returns 0 if image collected, queues a temp PNG in LOCAL_FILES.
+collect_clipboard_image() {
+    local png="$TMPDIR_LOCAL/claude-paste-${TS}.png"
+    case "$PLATFORM" in
+        x11)
+            xclip -selection clipboard -t image/png -o > "$png" 2>/dev/null && [ -s "$png" ] || return 1
+            ;;
+        wayland)
+            wl-paste --type image/png > "$png" 2>/dev/null && [ -s "$png" ] || return 1
+            ;;
+        macos)
+            osascript - "$png" <<'OSA' >/dev/null 2>&1
 on run argv
     set outFile to POSIX file (item 1 of argv)
     try
@@ -100,35 +138,46 @@ on run argv
         set eof of f to 0
         write imgData to f
         close access f
-    on error
-        return 0
     end try
 end run
 OSA
-        then
-            :
-        fi
-        if [ ! -s "$LOCAL_PATH" ]; then
-            notify "no image on the clipboard. Take a screenshot first (Cmd+Shift+4 + Ctrl)."
-            rm -f "$LOCAL_PATH"; exit 1
-        fi
-        ;;
-esac
+            [ -s "$png" ] || return 1
+            ;;
+    esac
+    LOCAL_FILES+=("$png" "${TS}.png")
+}
 
-# ---- 3. SCP to remote ------------------------------------------------------
+if ! collect_clipboard_files; then
+    if ! collect_clipboard_image; then
+        notify "Nothing on the clipboard. Take a screenshot OR copy a file in your file manager first."
+        rm -rf "$TMPDIR_LOCAL"
+        exit 1
+    fi
+fi
 
-REMOTE_PATH="$REMOTE_DIR/${TS}.png"
+# ---- 3. SCP each to remote -------------------------------------------------
 
 ssh -o BatchMode=yes "${SERVER_USER}@${SERVER_HOST}" "mkdir -p '$REMOTE_DIR'" >/dev/null 2>&1 || true
 
-if ! scp -q -o BatchMode=yes "$LOCAL_PATH" "${SERVER_USER}@${SERVER_HOST}:$REMOTE_PATH" 2>/dev/null; then
-    notify "SCP to ${SERVER_USER}@${SERVER_HOST} failed (key not authorised? host unreachable?)"
-    rm -f "$LOCAL_PATH"
-    exit 1
-fi
+REMOTE_PATHS=()
+i=0
+while [ "$i" -lt "${#LOCAL_FILES[@]}" ]; do
+    src="${LOCAL_FILES[$i]}"
+    name="${LOCAL_FILES[$((i + 1))]}"
+    dst="$REMOTE_DIR/$name"
+    if ! scp -q -o BatchMode=yes "$src" "${SERVER_USER}@${SERVER_HOST}:$dst" 2>/dev/null; then
+        notify "SCP failed for $src to ${SERVER_USER}@${SERVER_HOST} (key not authorised? host unreachable?)"
+        rm -rf "$TMPDIR_LOCAL"
+        exit 1
+    fi
+    REMOTE_PATHS+=("$dst")
+    i=$((i + 2))
+done
 
-rm -f "$LOCAL_PATH"
-rmdir "$(dirname "$LOCAL_PATH")" 2>/dev/null || true
+rm -rf "$TMPDIR_LOCAL"
+
+# Single string for typing / clipboard - space-joined
+REMOTE_PATH="${REMOTE_PATHS[*]}"
 
 # ---- 4. hand the path back to the user ------------------------------------
 

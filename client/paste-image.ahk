@@ -1,6 +1,7 @@
-; paste-image.ahk - bind a hotkey to paste-image.ps1 so a clipboard
-; screenshot lands on the claudefarm server and its remote path gets
-; typed into the focused window. Designed for AutoHotkey v2.
+; paste-image.ahk - bind a hotkey to paste-image.ps1 so whatever's on
+; the Windows clipboard (a screenshot OR file(s) copied from Explorer)
+; lands on the claudefarm server, with the remote path(s) typed into
+; the focused window. Designed for AutoHotkey v2.
 ;
 ; Default hotkey:  Win+Shift+V
 ;

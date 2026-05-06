@@ -1,21 +1,27 @@
 <#
 .SYNOPSIS
-    Take whatever image is on the Windows clipboard, ship it to a claudefarm
-    server via SCP, then type the resulting remote path into the focused
-    window. Designed to be bound to a hotkey so you can paste screenshots
-    into a remote Claude Code session over SSH.
+    Take whatever is on the Windows clipboard (a screenshot OR one or more
+    files copied from Explorer) and ship it to a claudefarm server via SCP,
+    then type the resulting remote path(s) into the focused window. Designed
+    to be bound to a hotkey so a remote Claude over SSH can see anything you
+    drag onto your local clipboard.
 
 .DESCRIPTION
-    Workflow:
-      1. Win+Shift+S (or any other screenshot tool) puts the image on your
-         Windows clipboard.
-      2. Press the hotkey you bound to this script.
-      3. ~2 seconds later, "/data/dev/_paste/<timestamp>.png" appears in
-         the focused window (the Claude Code SSH session in tmux).
-      4. Hit Enter, ask Claude to look at it.
+    Workflow A - screenshot:
+      1. Win+Shift+S → snip stays on clipboard
+      2. Press the hotkey
+      3. /data/dev/_paste/<timestamp>.png types into the focused window
+      4. Hit Enter, ask Claude to look at it
 
-    The path is also copied to your clipboard as a fallback in case
-    SendKeys lost focus.
+    Workflow B - file(s) from Explorer:
+      1. Select file(s) in Explorer, Ctrl+C
+      2. Press the hotkey
+      3. /data/dev/_paste/<timestamp>-<filename> types in (one path per file,
+         space-separated)
+      4. Hit Enter
+
+    Path(s) also land on your clipboard as a fallback in case SendKeys lost
+    focus while typing.
 
 .PARAMETER ServerHost
     SSH host of the claudefarm server. Default: 192.168.50.62 (K12 LXC 105).
@@ -24,19 +30,11 @@
     SSH user. Default: root.
 
 .PARAMETER RemoteDir
-    Directory on the server to SCP the image to. Must be writable by ServerUser
-    and pre-created. Default: /data/dev/_paste
-
-.EXAMPLE
-    .\paste-image.ps1
-    # uses defaults (K12)
-
-.EXAMPLE
-    .\paste-image.ps1 -ServerHost 10.0.0.5 -ServerUser pi -RemoteDir /tmp/paste
+    Directory on the server to SCP into. Default: /data/dev/_paste
 
 .NOTES
-    Bind via PowerToys Keyboard Manager OR AutoHotkey OR a Windows shortcut
-    .lnk with a hotkey set in its properties. See client/README.md.
+    Bind via AutoHotkey, PowerToys Keyboard Manager, or a Windows shortcut
+    .lnk hotkey. See client/README.md.
 #>
 [CmdletBinding()]
 param(
@@ -49,65 +47,75 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# ---- 1. Grab clipboard image -----------------------------------------------
-
-$img = [System.Windows.Forms.Clipboard]::GetImage()
-if ($null -eq $img) {
+function Toast($title, $msg, $icon = "Information") {
     [System.Windows.Forms.MessageBox]::Show(
-        "No image on the clipboard. Take a screenshot (Win+Shift+S) first.",
-        "claudefarm: paste-image",
+        $msg, $title,
         [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Information
+        [System.Windows.Forms.MessageBoxIcon]::$icon
     ) | Out-Null
+}
+
+function Send-Path-To-Server($localPath, $remoteName) {
+    $remotePath = "$RemoteDir/$remoteName"
+    $null = & ssh -o BatchMode=yes "${ServerUser}@${ServerHost}" "mkdir -p '$RemoteDir'" 2>&1
+    & scp -q -o BatchMode=yes $localPath "${ServerUser}@${ServerHost}:$remotePath" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Toast "claudefarm: paste-image" `
+              "SCP to ${ServerUser}@${ServerHost} failed (exit $LASTEXITCODE).`nLocal: $localPath" `
+              "Error"
+        exit 1
+    }
+    return $remotePath
+}
+
+# ---- Decide what's on the clipboard ----------------------------------------
+
+$clip = [System.Windows.Forms.Clipboard]
+$ts   = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+$remotePaths = @()
+
+if ($clip::ContainsFileDropList()) {
+    # Files copied from Explorer (Ctrl+C) - upload each one preserving its name
+    $files = $clip::GetFileDropList()
+    $i = 0
+    foreach ($f in $files) {
+        if (-not (Test-Path $f -PathType Leaf)) { continue }   # skip dirs for now
+        $i++
+        $stem = [System.IO.Path]::GetFileName($f)
+        $remoteName = "$ts-$i-$stem"
+        $remotePaths += (Send-Path-To-Server $f $remoteName)
+    }
+    if ($remotePaths.Count -eq 0) {
+        Toast "claudefarm: paste-image" `
+              "Clipboard has files but none are readable. (Folders are skipped.)"
+        exit 1
+    }
+} elseif ($clip::ContainsImage()) {
+    # Screenshot on clipboard - save to PNG then upload
+    $img       = $clip::GetImage()
+    $localPath = Join-Path $env:TEMP "claude-paste-$ts.png"
+    $img.Save($localPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $img.Dispose()
+    $remotePaths += (Send-Path-To-Server $localPath "$ts.png")
+    Remove-Item -Force $localPath -ErrorAction SilentlyContinue
+} else {
+    Toast "claudefarm: paste-image" `
+          "Nothing on the clipboard. Take a screenshot (Win+Shift+S) or copy a file in Explorer first."
     exit 1
 }
 
-# ---- 2. Save locally to temp ------------------------------------------------
+# ---- Hand the path(s) back to the user -------------------------------------
 
-$ts        = Get-Date -Format "yyyyMMdd-HHmmss-fff"
-$localPath = Join-Path $env:TEMP "claude-paste-$ts.png"
-$img.Save($localPath, [System.Drawing.Imaging.ImageFormat]::Png)
-$img.Dispose()
-
-# ---- 3. SCP to remote -------------------------------------------------------
-
-$remoteName = "$ts.png"
-$remotePath = "$RemoteDir/$remoteName"
-
-# Ensure remote dir exists (cheap, idempotent)
-$null = & ssh -o BatchMode=yes "${ServerUser}@${ServerHost}" "mkdir -p '$RemoteDir'" 2>&1
-& scp -q -o BatchMode=yes $localPath "${ServerUser}@${ServerHost}:$remotePath" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    [System.Windows.Forms.MessageBox]::Show(
-        "SCP to ${ServerUser}@${ServerHost} failed (exit $LASTEXITCODE).`nLocal: $localPath",
-        "claudefarm: paste-image",
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Error
-    ) | Out-Null
-    exit 1
-}
-
-# Local copy no longer needed
-Remove-Item -Force $localPath -ErrorAction SilentlyContinue
-
-# ---- 4. Hand the path back to the user --------------------------------------
+$pathsJoined = $remotePaths -join ' '
 
 # Clipboard fallback (so Ctrl+V still works if SendKeys lost focus)
-Set-Clipboard -Value $remotePath
+Set-Clipboard -Value $pathsJoined
 
-# Type into the focused window. SendKeys.SendWait blocks until the keystrokes
-# have been processed, which avoids race conditions with the active window.
-# Escape special chars: { } ( ) + ^ % ~ all have meanings in SendKeys syntax.
-$escaped = $remotePath -replace '([+^%~(){}])', '{$1}'
+# Escape SendKeys-special chars: { } ( ) + ^ % ~
+$escaped = $pathsJoined -replace '([+^%~(){}])', '{$1}'
 try {
     [System.Windows.Forms.SendKeys]::SendWait($escaped)
 } catch {
-    # Focus might have been on a non-typeable surface - the clipboard fallback
-    # has it covered. Show a quick toast so the user knows they can Ctrl+V.
-    [System.Windows.Forms.MessageBox]::Show(
-        "Path copied to clipboard. Ctrl+V to paste.`n`n$remotePath",
-        "claudefarm: paste-image",
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Information
-    ) | Out-Null
+    Toast "claudefarm: paste-image" `
+          "Path(s) copied to clipboard. Ctrl+V to paste.`n`n$pathsJoined"
 }
