@@ -710,10 +710,13 @@ def tui_instance_menu(name: str):
         info = render_instance_info(name, i)
         venv_exists = has_venv(i["workdir"])
         is_default_wd = (Path(i["workdir"]).resolve() == Path(DEFAULT_WORKDIR).resolve())
+        cur_mode = i.get("mode", "code")
+        flip_target = "agents" if cur_mode == "code" else "code"
         options = [
             (f"{ICON_TMUX}  attach (Ctrl+b d to detach)", "attach"),
             (f"{ICON_LINK}  show last claude.ai url", "url"),
             (f"{ICON_REFRESH}  restart (kills convo, fresh url)", "restart"),
+            (f"{ICON_CUBE}  switch mode -> {flip_target} (restarts session)", "switch-mode"),
             (f"{ICON_STOP}  stop", "stop"),
         ]
         if not is_default_wd:
@@ -749,6 +752,31 @@ def tui_instance_menu(name: str):
             ok, msg = stop_instance(name)
             console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
             input("press enter to continue...")
+        elif ans == "switch-mode":
+            new_mode = "agents" if cur_mode == "code" else "code"
+            confirm = select_in_box(
+                Text(
+                    f"Switch {name} from '{cur_mode}' to '{new_mode}'?\n"
+                    f"The tmux session will be killed and restarted with the new inner command.\n"
+                    f"Any in-flight conversation in '{cur_mode}' will be lost.",
+                    style="warn", justify="center",
+                ),
+                [(f"{ICON_CROSS}  no, cancel", False),
+                 (f"{ICON_REFRESH}  yes, switch to {new_mode}", True)],
+                footer_hint="↑↓ to choose, enter to confirm",
+            )
+            if confirm:
+                clear_screen()
+                with console.status(f"[info]switching {name} to {new_mode}...[/info]", spinner="dots"):
+                    write_mode_dropin(name, new_mode)
+                    # Kill the tmux session so the wrapper rebuilds it with the new inner cmd
+                    tmux("kill-session", "-t", f"claude-{name}")
+                    r = systemctl("restart", f"claude-remote@{name}.service")
+                    ok = r.returncode == 0
+                    msg = (f"switched to {new_mode}; session restarting" if ok
+                           else f"systemctl restart failed: {r.stderr.strip()}")
+                console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
+                input("press enter to continue...")
         elif ans == "clean-venv":
             clear_screen()
             with console.status(f"[info]rebuilding venv for {name}...[/info]", spinner="dots"):
