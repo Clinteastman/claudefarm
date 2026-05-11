@@ -49,6 +49,19 @@ fi
 # explicitly survives - tmux servers shared across instances don't
 # auto-propagate the wrapper's env to new sessions.
 TMUX_ENV_ARGS=(-e "CLAUDE_INSTANCE=$INSTANCE")
+
+# In agents mode, set CLAUDE_AGENTS_PARENT so the awtrix hooks know to
+# route their state writes to <STATE_DIR>/<parent>/<pid>.json (the
+# aggregator merges those by max-priority for one parent tile).
+if [ "${CLAUDE_MODE:-code}" = "agents" ]; then
+    TMUX_ENV_ARGS+=(-e "CLAUDE_AGENTS_PARENT=$INSTANCE")
+    # Seed an idle placeholder so the parent tile appears immediately,
+    # even before any agents have been dispatched. PID 0 reserved for
+    # the wrapper itself.
+    mkdir -p "/run/claude-status/$INSTANCE"
+    printf '{"instance":"wrapper","state":"idle","ts":%d}\n' "$(date +%s)" \
+        > "/run/claude-status/$INSTANCE/0.json" || true
+fi
 while IFS= read -r _name; do
     [ -n "${_name:-}" ] && TMUX_ENV_ARGS+=(-e "${_name}=${!_name}")
 done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|VIRTUAL_ENV|PATH)/ {print $1}')
