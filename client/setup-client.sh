@@ -51,7 +51,7 @@ step "homelab repo location"
 
 DEFAULT_REPO="$HOME/github/k12-homelab"
 prompt "Clone (or use) the homelab repo at [${DEFAULT_REPO}]:"
-read -r REPO_PATH
+read -r REPO_PATH < /dev/tty
 REPO_PATH="${REPO_PATH:-$DEFAULT_REPO}"
 
 # Expand ~ in case the user typed it
@@ -89,7 +89,7 @@ done
 if [ -z "$PUBKEY" ]; then
   warn "no SSH key found in $SSH_DIR"
   prompt "Generate one now (ed25519, no passphrase)? [Y/n]:"
-  read -r ans
+  read -r ans < /dev/tty
   if [[ ! "$ans" =~ ^[nN] ]]; then
     ssh-keygen -t ed25519 -f "$SSH_DIR/id_ed25519" -N "" -C "$(whoami)@$(hostname)" >/dev/null
     PUBKEY="$SSH_DIR/id_ed25519.pub"
@@ -142,7 +142,7 @@ cat "$PUBKEY" | sed 's/^/    /'
 printf "${N}\n"
 
 prompt "Try ssh-copy-id to ${K12_USER}@${K12_HOST} now? [Y/n]:"
-read -r ans
+read -r ans < /dev/tty
 if [[ ! "$ans" =~ ^[nN] ]]; then
   if command -v ssh-copy-id >/dev/null 2>&1; then
     if ssh-copy-id -i "$PUBKEY" "${K12_USER}@${K12_HOST}" 2>&1 | sed 's/^/        /'; then
@@ -159,7 +159,7 @@ fi
 
 step "test connection"
 prompt "Try ssh ${K12_USER}@${K12_HOST} 'hostname' now? [Y/n]:"
-read -r ans
+read -r ans < /dev/tty
 if [[ ! "$ans" =~ ^[nN] ]]; then
   if ssh -o BatchMode=yes -o ConnectTimeout=5 "${K12_USER}@${K12_HOST}" hostname 2>&1; then
     ok "ssh works"
@@ -190,7 +190,7 @@ if [ -f "$RC" ] && grep -qF "$ALIAS_MARKER" "$RC"; then
   skip "alias already in $RC"
 else
   prompt "Add 'claude-mgr' shell alias to $RC? [Y/n]:"
-  read -r ans
+  read -r ans < /dev/tty
   if [[ ! "$ans" =~ ^[nN] ]]; then
     touch "$RC"
     {
