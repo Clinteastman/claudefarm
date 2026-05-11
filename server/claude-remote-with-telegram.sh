@@ -53,26 +53,56 @@ while IFS= read -r _name; do
     [ -n "${_name:-}" ] && TMUX_ENV_ARGS+=(-e "${_name}=${!_name}")
 done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|VIRTUAL_ENV|PATH)/ {print $1}')
 
-tmux new-session -d -s "$SESSION" "${TMUX_ENV_ARGS[@]}" "claude --name \"$SESSION_NAME\""
+# Mode: "code" (default - single Claude Code session, gets its own
+# claude.ai Remote Control URL) or "agents" (the new `claude agents`
+# multi-agent TUI from Claude Code v2.1.139+; each dispatched agent
+# inside it gets its own URL, the wrapper doesn't capture one).
+MODE="${CLAUDE_MODE:-code}"
+if [ "$MODE" = "agents" ]; then
+    INNER_CMD="claude agents"
+    echo "[$(date -Is)] mode=agents; running 'claude agents'" | tee -a "$LOG"
+else
+    INNER_CMD="claude --name \"$SESSION_NAME\""
+    echo "[$(date -Is)] mode=code; running 'claude --name ...'" | tee -a "$LOG"
+fi
+
+tmux new-session -d -s "$SESSION" "${TMUX_ENV_ARGS[@]}" "$INNER_CMD"
 tmux set-option -t "$SESSION" -g window-size latest 2>/dev/null || true
 tmux set-option -t "$SESSION" -w aggressive-resize on 2>/dev/null || true
 
-# Wait for the claude.ai Remote Control URL to surface in the pane (up to ~90s).
+# Wait for the claude.ai Remote Control URL to surface in the pane (up
+# to ~90s). Only meaningful in code mode; in agents mode the surrounding
+# session has no URL of its own (each dispatched agent has its own).
 URL=""
-for i in $(seq 1 45); do
-  sleep 2
-  PANE=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || true)
-  URL=$(echo "$PANE" | grep -oE 'https://claude\.ai[a-zA-Z0-9./_?=&%+-]+' | head -1)
-  [[ -n "$URL" ]] && break
-done
+if [ "$MODE" = "code" ]; then
+  for i in $(seq 1 45); do
+    sleep 2
+    PANE=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || true)
+    URL=$(echo "$PANE" | grep -oE 'https://claude\.ai[a-zA-Z0-9./_?=&%+-]+' | head -1)
+    [[ -n "$URL" ]] && break
+  done
+fi
 
-MSG="LXC 105 Claude instance '${INSTANCE}' (re)started.
+if [ "$MODE" = "agents" ]; then
+  MSG="LXC 105 Claude instance '${INSTANCE}' (re)started in AGENTS mode.
+
+This session is the 'claude agents' multi-agent TUI. Dispatch agents
+from inside; each dispatched agent has its own claude.ai URL shown in
+the peek panel (Space).
+
+Terminal: ssh claude-${INSTANCE}  (or: ssh root@192.168.50.62 -t tmux a -t $SESSION)
+Workdir: ${WORKDIR}
+
+Detach from tmux with Ctrl+b then d (do NOT Ctrl+C - that kills the TUI)."
+else
+  MSG="LXC 105 Claude instance '${INSTANCE}' (re)started.
 
 Phone/desktop app: ${URL:-NO URL CAPTURED - check tmux}
 Terminal: ssh claude-${INSTANCE}  (or: ssh root@192.168.50.62 -t tmux a -t $SESSION)
 Workdir: ${WORKDIR}
 
 Detach from tmux with Ctrl+b then d (do NOT Ctrl+C - that kills claude)."
+fi
 
 /root/telegram_notify.py "$MSG" >>/var/log/claude-remote-telegram.log 2>&1 || \
   echo "[$(date -Is)] Telegram failed" | tee -a "$LOG"

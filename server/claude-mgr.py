@@ -196,10 +196,11 @@ def list_instances() -> list[dict]:
         tmux_alive = f"claude-{name}" in tmux_sessions
         workdir = read_workdir(name)
         url = last_url(name)
+        mode = read_mode(name)
         insts.append({
             "name": name, "unit": unit, "active": active, "sub": sub,
             "enabled": enabled, "tmux_alive": tmux_alive,
-            "workdir": workdir, "url": url,
+            "workdir": workdir, "url": url, "mode": mode,
         })
     return insts
 
@@ -211,6 +212,19 @@ def read_workdir(name: str) -> str:
             if ln.startswith("Environment=CLAUDE_WORKDIR="):
                 return ln.split("=", 2)[2].strip()
     return DEFAULT_WORKDIR
+
+
+def read_mode(name: str) -> str:
+    """Returns "code" (default) or "agents". Stored as the mode.conf
+    drop-in alongside workdir.conf; absence = code mode."""
+    dropin = DROPIN_DIR / f"claude-remote@{name}.service.d" / "mode.conf"
+    if dropin.exists():
+        for ln in dropin.read_text().splitlines():
+            if ln.startswith("Environment=CLAUDE_MODE="):
+                v = ln.split("=", 2)[2].strip().strip('"')
+                if v in ("code", "agents"):
+                    return v
+    return "code"
 
 
 def last_url(name: str) -> str | None:
@@ -227,6 +241,27 @@ def write_workdir_dropin(name: str, workdir: str) -> None:
     (d / "workdir.conf").write_text(
         f"[Service]\nEnvironment=CLAUDE_WORKDIR={workdir}\n"
     )
+    systemctl("daemon-reload")
+
+
+def write_mode_dropin(name: str, mode: str) -> None:
+    """Persists the per-instance mode (code | agents) via a systemd
+    drop-in alongside workdir.conf. Default mode = code; we only write
+    the drop-in for non-default values so the absence of a file means
+    'code mode'."""
+    d = DROPIN_DIR / f"claude-remote@{name}.service.d"
+    f = d / "mode.conf"
+    if mode == "code":
+        if f.exists():
+            f.unlink()
+            # If the dropin dir is now empty, prune it too
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+    else:
+        d.mkdir(parents=True, exist_ok=True)
+        f.write_text(f'[Service]\nEnvironment="CLAUDE_MODE={mode}"\n')
     systemctl("daemon-reload")
 
 
@@ -262,7 +297,8 @@ def ensure_venv(workdir: str) -> str | None:
 
 def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
                    clone_url: str | None = None,
-                   create_venv: bool = True) -> tuple[bool, str]:
+                   create_venv: bool = True,
+                   mode: str = "code") -> tuple[bool, str]:
     if not re.fullmatch(r"[a-z][a-z0-9_-]*", name):
         return False, f"invalid name '{name}': lowercase letters, digits, _, - only"
 
@@ -282,13 +318,15 @@ def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
 
     if workdir != DEFAULT_WORKDIR:
         write_workdir_dropin(name, workdir)
+    # Always write/clear mode dropin so toggling between code <-> agents works
+    write_mode_dropin(name, mode)
 
     systemctl("enable", f"claude-remote@{name}.service")
     r = systemctl("restart", f"claude-remote@{name}.service")
     if r.returncode != 0:
         return False, f"systemctl restart failed: {r.stderr.strip()}"
     sync_ssh()
-    msg = f"started claude-remote@{name} (workdir={workdir})"
+    msg = f"started claude-remote@{name} (mode={mode}, workdir={workdir})"
     if venv_msg:
         msg += f"\n  {venv_msg}"
     return True, msg
@@ -558,13 +596,14 @@ def render_instances_table(insts: list[dict]) -> Table:
     )
     t.add_column("", width=2, no_wrap=True)
     t.add_column("name", style=C_MAUVE, no_wrap=True)
+    t.add_column("mode", no_wrap=True, width=7)
     t.add_column("state", no_wrap=True)
     t.add_column("tmux", justify="center", width=6)
     t.add_column(f"{ICON_FOLDER}  workdir", style=C_SUBTEXT, overflow="fold")
     t.add_column(f"{ICON_LINK} url", style=C_SAPPHIRE, overflow="fold", max_width=40)
 
     if not insts:
-        t.add_row("", Text("(no instances yet)", style="muted"), "", "", "", "")
+        t.add_row("", Text("(no instances yet)", style="muted"), "", "", "", "", "")
         return t
 
     for i in insts:
@@ -583,6 +622,9 @@ def render_instances_table(insts: list[dict]) -> Table:
         tmux_mark = (Text(ICON_CHECK, style="ok") if i["tmux_alive"]
                      else Text(ICON_CROSS, style="muted"))
 
+        mode = i.get("mode", "code")
+        mode_text = Text(mode, style=(C_PEACH if mode == "agents" else C_SUBTEXT))
+
         url_short = ""
         if i["url"]:
             url_short = i["url"].split("/cli/")[-1] if "/cli/" in i["url"] else i["url"][-30:]
@@ -590,6 +632,7 @@ def render_instances_table(insts: list[dict]) -> Table:
         t.add_row(
             state_icon(i),
             i["name"],
+            mode_text,
             state_text,
             tmux_mark,
             i["workdir"],
@@ -647,6 +690,9 @@ def render_instance_info(name: str, i: dict) -> Text:
                 style="ok" if i["tmux_alive"] else "err")
     info.append("  workdir  ", style="muted")
     info.append(f"{i['workdir']}\n", style="value")
+    info.append("  mode     ", style="muted")
+    mode = i.get("mode", "code")
+    info.append(f"{mode}\n", style=("warn" if mode == "agents" else "value"))
     info.append("  url      ", style="muted")
     info.append(i["url"] or "(none captured)", style="url" if i["url"] else "muted")
     return info
@@ -781,6 +827,18 @@ def tui_create():
         return
     name = name.strip()
 
+    mode = select_in_box(
+        Text(f"How should '{name}' run Claude?",
+             style="title", justify="center"),
+        [
+            (f"{ICON_CUBE}  Claude Code (single agent, classic)", "code"),
+            (f"{ICON_CUBE}  Claude Agents (multi-agent TUI; v2.1.139+)", "agents"),
+        ],
+        footer_hint="↑↓ to choose, enter to confirm",
+    )
+    if mode is None:
+        return
+
     kind = select_in_box(
         Text(f"Where should '{name}' run?",
              style="title", justify="center"),
@@ -832,7 +890,7 @@ def tui_create():
 
     with console.status(f"[info]starting {name}...[/info]", spinner="dots"):
         ok, msg = start_instance(name, workdir, clone_url=clone_url,
-                                  create_venv=create_venv)
+                                  create_venv=create_venv, mode=mode)
     console.print(f"[{'ok' if ok else 'err'}]{ICON_CHECK if ok else ICON_CROSS} {msg}[/]")
 
     if ok:
@@ -859,8 +917,12 @@ def cmd_start(args):
     create_venv = True
     if args.no_venv:
         create_venv = False
+    mode = getattr(args, "mode", None) or "code"
+    if mode not in ("code", "agents"):
+        console.print(f"[err]invalid --mode {mode!r}; expected 'code' or 'agents'[/]")
+        sys.exit(2)
     ok, msg = start_instance(args.name, args.workdir or DEFAULT_WORKDIR,
-                              args.clone, create_venv=create_venv)
+                              args.clone, create_venv=create_venv, mode=mode)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
 
@@ -934,7 +996,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = p.add_subparsers(dest="cmd", required=True)
     sp.add_parser("list").set_defaults(func=cmd_list)
-    s = sp.add_parser("start"); s.add_argument("name"); s.add_argument("--workdir"); s.add_argument("--clone"); s.add_argument("--no-venv", action="store_true", help="skip auto-creating <workdir>/.venv"); s.set_defaults(func=cmd_start)
+    s = sp.add_parser("start"); s.add_argument("name"); s.add_argument("--workdir"); s.add_argument("--clone"); s.add_argument("--no-venv", action="store_true", help="skip auto-creating <workdir>/.venv"); s.add_argument("--mode", choices=("code","agents"), default="code", help="run plain 'claude' (default) or the new 'claude agents' multi-agent TUI"); s.set_defaults(func=cmd_start)
     s = sp.add_parser("stop"); s.add_argument("name"); s.set_defaults(func=cmd_stop)
     s = sp.add_parser("restart"); s.add_argument("name"); s.set_defaults(func=cmd_restart)
     s = sp.add_parser("attach"); s.add_argument("name"); s.set_defaults(func=cmd_attach)
