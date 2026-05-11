@@ -168,6 +168,41 @@ if [[ ! "$ans" =~ ^[nN] ]]; then
   fi
 fi
 
+# ---------- shell alias for claude-mgr --------------------------------------
+#
+# claude-mgr lives on the server; this shell alias lets you type
+# `claude-mgr` locally and have it ssh through to the running instance
+# picker. Idempotent - re-running the script won't duplicate the line.
+
+step "claude-mgr shell alias"
+ALIAS_LINE="alias claude-mgr='ssh -t ${K12_USER}@${K12_HOST} claude-mgr'"
+ALIAS_MARKER="# claudefarm: claude-mgr picker alias"
+
+# Pick the rc file: zsh if it's the login shell, otherwise bash. macOS
+# defaults to zsh; most Linux to bash.
+case "$SHELL" in
+  */zsh)  RC="$HOME/.zshrc"  ;;
+  */bash) RC="$HOME/.bashrc" ;;
+  *)      RC="$HOME/.profile" ;;
+esac
+
+if [ -f "$RC" ] && grep -qF "$ALIAS_MARKER" "$RC"; then
+  skip "alias already in $RC"
+else
+  prompt "Add 'claude-mgr' shell alias to $RC? [Y/n]:"
+  read -r ans
+  if [[ ! "$ans" =~ ^[nN] ]]; then
+    touch "$RC"
+    {
+      printf "\n%s\n" "$ALIAS_MARKER"
+      printf "%s\n" "$ALIAS_LINE"
+    } >> "$RC"
+    ok "appended to $RC - open a new shell (or 'source $RC') to use it"
+  else
+    skip "alias not added (add manually: $ALIAS_LINE)"
+  fi
+fi
+
 # ---------- done -----------------------------------------------------------
 
 step "done"
