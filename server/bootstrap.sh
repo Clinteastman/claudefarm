@@ -203,6 +203,12 @@ CLAUDE_MGR_RESTART_VIA=""
 # the auto-synced SSH alias file there).
 CLAUDEFARM_REPO="$REPO_PATH"
 
+# Tell apps in interactive shells that the terminal does 24-bit color.
+# The systemd template sets the same value for claudefarm-spawned
+# sessions; this line is for when you SSH in and run `claude` (or any
+# other TUI) directly.
+COLORTERM=truecolor
+
 # Optional extras: anything you set here gets exported into every Claude
 # instance's environment via systemd EnvironmentFile=. Useful for tools
 # like the gscontent 'preview' command that need PREVIEW_URL_BASE +

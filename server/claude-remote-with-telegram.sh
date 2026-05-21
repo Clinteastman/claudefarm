@@ -64,7 +64,7 @@ if [ "${CLAUDE_MODE:-code}" = "agents" ]; then
 fi
 while IFS= read -r _name; do
     [ -n "${_name:-}" ] && TMUX_ENV_ARGS+=(-e "${_name}=${!_name}")
-done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|HONCHO_|VIRTUAL_ENV)/ {print $1} /^(PATH|HOME)=/ {print $1}')
+done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|HONCHO_|VIRTUAL_ENV)/ {print $1} /^(PATH|HOME|COLORTERM)=/ {print $1}')
 
 # Mode: "code" (default - single Claude Code session, gets its own
 # claude.ai Remote Control URL) or "agents" (the new `claude agents`
