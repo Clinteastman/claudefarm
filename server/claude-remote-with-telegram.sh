@@ -64,7 +64,7 @@ if [ "${CLAUDE_MODE:-code}" = "agents" ]; then
 fi
 while IFS= read -r _name; do
     [ -n "${_name:-}" ] && TMUX_ENV_ARGS+=(-e "${_name}=${!_name}")
-done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|VIRTUAL_ENV|PATH)/ {print $1}')
+done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|HONCHO_|VIRTUAL_ENV)/ {print $1} /^(PATH|HOME)=/ {print $1}')
 
 # Mode: "code" (default - single Claude Code session, gets its own
 # claude.ai Remote Control URL) or "agents" (the new `claude agents`
@@ -94,6 +94,17 @@ if [ "$MODE" = "code" ]; then
     URL=$(echo "$PANE" | grep -oE 'https://claude\.ai[a-zA-Z0-9./_?=&%+-]+' | head -1)
     [[ -n "$URL" ]] && break
   done
+
+  # Fail fast if URL never surfaced: claude likely crashed or got stuck on
+  # auth. Exit non-zero so systemd restarts us instead of leaving the unit
+  # "active" with a broken claude inside.
+  if [ -z "$URL" ]; then
+    echo "[$(date -Is)] no claude.ai URL after 90s; treating as failed start, exiting for systemd restart" | tee -a "$LOG"
+    /root/telegram_notify.py "LXC 105 Claude instance '${INSTANCE}' failed to start (no URL captured after 90s); systemd will retry." \
+      >>/var/log/claude-remote-telegram.log 2>&1 || true
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    exit 1
+  fi
 fi
 
 if [ "$MODE" = "agents" ]; then
@@ -123,9 +134,25 @@ fi
 echo "[$(date -Is)] URL=${URL:-none}; entering watchdog loop for instance=$INSTANCE" | tee -a "$LOG"
 
 # Keep this script alive so systemd treats us as the long-running unit.
-# Exit when the tmux session dies, so systemd restarts us.
+# Exit when the tmux session dies OR when claude crashes inside it
+# (leaving the pane on a shell instead of the claude process), so systemd
+# restarts us.
 while tmux has-session -t "$SESSION" 2>/dev/null; do
   sleep 30
+
+  # Liveness: pane's current command should still be claude (or its node/bun
+  # runtime). If a shell took over, claude crashed - exit so systemd restarts.
+  PANE_CMD=$(tmux list-panes -t "$SESSION" -F '#{pane_current_command}' 2>/dev/null | head -1)
+  case "$PANE_CMD" in
+    node|claude|claude.exe|bun|"")
+      # node/claude/bun = healthy; "" = session vanished, has-session catches it
+      ;;
+    *)
+      echo "[$(date -Is)] pane command is '$PANE_CMD' (expected node/claude/bun); claude crashed - exiting for systemd restart" | tee -a "$LOG"
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      exit 1
+      ;;
+  esac
 done
 
 echo "[$(date -Is)] tmux session $SESSION ended; exiting for systemd restart" | tee -a "$LOG"

@@ -194,12 +194,24 @@ def list_instances() -> list[dict]:
         active, sub = states.get(unit, ("inactive", "dead"))
         enabled = enabled_units.get(unit, "disabled")
         tmux_alive = f"claude-{name}" in tmux_sessions
+        # claude_alive: the inner claude process is actually running, not
+        # just the tmux session shell. Catches the failure mode where
+        # claude crashes / exits but tmux session persists with a shell.
+        # If we wait for systemd's restart in this state, the user attaches
+        # and finds a dead session - this distinguishes the two states.
+        claude_alive = False
+        if tmux_alive:
+            r = run(["tmux", "list-panes", "-t", f"claude-{name}",
+                     "-F", "#{pane_current_command}"])
+            pane_cmd = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
+            claude_alive = pane_cmd in ("node", "claude", "claude.exe", "bun")
         workdir = read_workdir(name)
         url = last_url(name)
         mode = read_mode(name)
         insts.append({
             "name": name, "unit": unit, "active": active, "sub": sub,
             "enabled": enabled, "tmux_alive": tmux_alive,
+            "claude_alive": claude_alive,
             "workdir": workdir, "url": url, "mode": mode,
         })
     return insts
@@ -450,8 +462,14 @@ def sync_ssh() -> tuple[bool, str]:
 # ---- TUI rendering -----------------------------------------------------------
 
 def state_icon(i: dict) -> Text:
-    if i["active"] == "active" and i["sub"] == "running" and i["tmux_alive"]:
+    if (i["active"] == "active" and i["sub"] == "running"
+            and i["tmux_alive"] and i["claude_alive"]):
         return Text(f"{ICON_DOT_ON}", style=C_GREEN)
+    # systemd thinks running but claude isn't actually alive in the pane -
+    # red so the user notices instead of attaching to a broken session.
+    if (i["active"] == "active" and i["sub"] == "running"
+            and i["tmux_alive"] and not i["claude_alive"]):
+        return Text(f"{ICON_DOT_ON}", style=C_RED)
     if i["active"] == "active":
         return Text(f"{ICON_DOT_ON}", style=C_YELLOW)
     if i["active"] == "activating":
@@ -619,8 +637,13 @@ def render_instances_table(insts: list[dict]) -> Table:
         else:
             state_text.append(i["sub"], style="muted")
 
-        tmux_mark = (Text(ICON_CHECK, style="ok") if i["tmux_alive"]
-                     else Text(ICON_CROSS, style="muted"))
+        if i["tmux_alive"] and i["claude_alive"]:
+            tmux_mark = Text(ICON_CHECK, style="ok")
+        elif i["tmux_alive"]:
+            # tmux session exists but claude isn't running inside - broken
+            tmux_mark = Text("!", style="err")
+        else:
+            tmux_mark = Text(ICON_CROSS, style="muted")
 
         mode = i.get("mode", "code")
         mode_text = Text(mode, style=(C_PEACH if mode == "agents" else C_SUBTEXT))
@@ -686,8 +709,12 @@ def render_instance_info(name: str, i: dict) -> Text:
     info.append(f"{i['active']}\n",
                 style="ok" if i["active"] == "active" else "warn")
     info.append("  tmux     ", style="muted")
-    info.append(f"{'alive' if i['tmux_alive'] else 'not running'}\n",
-                style="ok" if i["tmux_alive"] else "err")
+    if i["tmux_alive"] and i["claude_alive"]:
+        info.append("alive\n", style="ok")
+    elif i["tmux_alive"]:
+        info.append("session alive, claude DEAD (needs restart)\n", style="err")
+    else:
+        info.append("not running\n", style="err")
     info.append("  workdir  ", style="muted")
     info.append(f"{i['workdir']}\n", style="value")
     info.append("  mode     ", style="muted")
