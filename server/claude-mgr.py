@@ -311,8 +311,8 @@ def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
                    clone_url: str | None = None,
                    create_venv: bool = True,
                    mode: str = "code") -> tuple[bool, str]:
-    if not re.fullmatch(r"[a-z][a-z0-9_-]*", name):
-        return False, f"invalid name '{name}': lowercase letters, digits, _, - only"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+        return False, f"invalid name '{name}': must start with a lowercase letter or digit, then lowercase letters, digits, _, - only"
 
     if clone_url:
         if workdir == DEFAULT_WORKDIR:
