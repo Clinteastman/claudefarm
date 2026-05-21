@@ -873,10 +873,10 @@ def tui_create():
     console.print()
 
     name = questionary.text(
-        "Instance name (lowercase, no spaces - e.g. dev, scratch, project1)",
+        "Instance name (lowercase, no spaces - e.g. dev, scratch, 1vs100)",
         style=QSTYLE, qmark=ICON_PLUS,
-        validate=lambda v: bool(re.fullmatch(r"[a-z][a-z0-9_-]*", v.strip())) or
-                            "use lowercase letters, digits, _, -",
+        validate=lambda v: bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]*", v.strip())) or
+                            "use lowercase letters, digits, _, - (must start with a letter or digit)",
     ).ask()
     if not name:
         return
