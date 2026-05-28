@@ -10,7 +10,7 @@
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/Clinteastman/claudefarm/main/client/setup-client.sh | bash
 #   # or, after cloning:
-#   bash desktop/setup-client.sh
+#   bash client/setup-client.sh
 
 set -u
 
@@ -68,7 +68,7 @@ else
   ok "cloned"
 fi
 
-ALIAS_GLOB="$REPO_PATH/desktop/claude-instances-*.cfg"
+ALIAS_GLOB="$REPO_PATH/client/claude-instances-*.cfg"
 
 # ---------- ssh key --------------------------------------------------------
 
@@ -168,11 +168,45 @@ if [[ ! "$ans" =~ ^[nN] ]]; then
   fi
 fi
 
+# ---------- ssh Host alias for claude-mgr ----------------------------------
+#
+# Per-instance aliases (claude-k12-<name>) come from the included
+# claude-instances-*.cfg files which are regenerated server-side. The
+# top-level claude-mgr alias is static (hostname + user are server-specific
+# but never change for a given client), so we write it once here with
+# idempotency markers, directly into ~/.ssh/config.
+
+step "ssh Host claude-mgr"
+MGR_MARKER_START="# claudefarm: claude-mgr alias - managed by setup-client.sh"
+MGR_MARKER_END="# claudefarm: end claude-mgr alias"
+MGR_BLOCK="$MGR_MARKER_START
+Host claude-mgr
+  HostName $K12_HOST
+  User $K12_USER
+  RemoteCommand /usr/local/bin/claude-mgr
+  RequestTTY force
+$MGR_MARKER_END"
+
+if [ -f "$SSHCFG" ] && grep -qF "$MGR_MARKER_START" "$SSHCFG"; then
+  # Already present - replace the block in case K12_HOST/USER changed
+  python3 - "$SSHCFG" "$MGR_MARKER_START" "$MGR_MARKER_END" "$MGR_BLOCK" <<'PYEOF' 2>/dev/null || warn "couldn't refresh claude-mgr block; please check $SSHCFG manually"
+import sys, re
+path, start, end, block = sys.argv[1:5]
+with open(path) as f: text = f.read()
+new = re.sub(re.escape(start) + r'.*?' + re.escape(end), block, text, flags=re.DOTALL)
+with open(path, 'w') as f: f.write(new)
+PYEOF
+  ok "refreshed claude-mgr Host block in $SSHCFG"
+else
+  printf "\n%s\n" "$MGR_BLOCK" >> "$SSHCFG"
+  ok "appended claude-mgr Host block to $SSHCFG"
+fi
+
 # ---------- shell alias for claude-mgr --------------------------------------
 #
-# claude-mgr lives on the server; this shell alias lets you type
-# `claude-mgr` locally and have it ssh through to the running instance
-# picker. Idempotent - re-running the script won't duplicate the line.
+# Optional convenience: lets you type `claude-mgr` directly (no `ssh`
+# prefix) and have it ssh through to the running instance picker.
+# Idempotent - re-running the script won't duplicate the line.
 
 step "claude-mgr shell alias"
 ALIAS_LINE="alias claude-mgr='ssh -t ${K12_USER}@${K12_HOST} claude-mgr'"
@@ -214,10 +248,12 @@ cat <<EOF
 EOF
 
 # Show currently-known aliases as a hint
-if compgen -G "$REPO_PATH/desktop/claude-instances-*.cfg" >/dev/null 2>&1; then
-  for f in "$REPO_PATH"/desktop/claude-instances-*.cfg; do
+if compgen -G "$REPO_PATH/client/claude-instances-*.cfg" >/dev/null 2>&1; then
+  for f in "$REPO_PATH"/client/claude-instances-*.cfg; do
     awk '/^Host claude-/ {printf "    %s ssh%s %s%s\n", "'"${C}"'", "'"${N}"'", $2, ""}' "$f"
   done
+  # claude-mgr alias is always wired up by this script
+  printf "    %s ssh%s claude-mgr%s  (instance picker TUI)\n" "${C}" "${N}" ""
 fi
 
 cat <<EOF
