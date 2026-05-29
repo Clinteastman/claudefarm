@@ -10,8 +10,18 @@
 #   bash /data/dev/claudefarm/server/bootstrap.sh
 #
 # Prereqs: Debian/Ubuntu Linux, root (or sudo), internet access.
+#
+# SECURITY: this is a curl|bash installer that runs as root and pulls third-party
+# install scripts (NodeSource, astral.sh) plus npm/pip packages, none pinned by
+# hash. Inspect this script before running it, and pin to a tag/commit you trust
+# rather than `main` if you want reproducibility. Set CLAUDE_CODE_VERSION to pin
+# the claude-code npm version.
 
-set -u
+# pipefail so a failing leg of a pipeline (e.g. git pull | sed) is detectable;
+# we intentionally do NOT use `set -e` here - the script relies on explicit
+# `|| fail` guards and per-step conditionals, and a blanket errexit would make a
+# benign non-zero abort a half-finished install.
+set -uo pipefail
 
 # ---------- Catppuccin Mocha for our messages -------------------------------
 M='\033[38;2;203;166;247m'   # mauve
@@ -57,11 +67,14 @@ if [ "${#NEED_APT[@]}" -gt 0 ]; then
 fi
 
 # nodejs (for claude-code) - need v20+
-NODE_VERSION="$(command -v node >/dev/null 2>&1 && node -v | sed 's/v//;s/\..*//' || echo 0)"
+# Robust major-version parse: a non-numeric `node -v` (nvm shim, custom build)
+# must not crash the `-lt` test - default to 0 so we (re)install.
+NODE_VERSION="$(node -v 2>/dev/null | sed -n 's/^v\([0-9]\+\).*/\1/p')"
+NODE_VERSION="${NODE_VERSION:-0}"
 if [ "$NODE_VERSION" -lt 20 ]; then
   info "installing Node.js 20.x (current: v$NODE_VERSION)"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
-  apt-get install -y -qq nodejs >/dev/null
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y -qq nodejs
   ok "node $(node -v) installed"
 else
   skip "node $(node -v) (>= 20)"
@@ -91,8 +104,8 @@ step "claude-code"
 if command -v claude >/dev/null 2>&1; then
   skip "claude $(claude --version 2>/dev/null | head -1)"
 else
-  info "npm install -g @anthropic-ai/claude-code"
-  npm install -g @anthropic-ai/claude-code >/dev/null
+  info "npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION:-latest}"
+  npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION:-latest}"
   ok "claude $(claude --version 2>/dev/null | head -1) installed"
 fi
 
@@ -103,7 +116,7 @@ if command -v uv >/dev/null 2>&1; then
   skip "uv $(uv --version 2>/dev/null | awk '{print $2}')"
 else
   info "installing uv from astral.sh"
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh >/dev/null 2>&1 \
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
     || pip3 install --break-system-packages --quiet uv \
     || fail "uv install failed (tried both curl + pip)"
   ok "uv $(uv --version 2>/dev/null | awk '{print $2}') installed"
@@ -118,7 +131,13 @@ step "homelab repo at $REPO_PATH"
 if [ -d "$REPO_PATH/.git" ]; then
   info "updating existing clone"
   git -C "$REPO_PATH" pull --ff-only --quiet 2>&1 | sed 's/^/        /'
-  ok "repo up to date"
+  # Gate the OK on git's own exit (PIPESTATUS[0]) - sed always exits 0, so a
+  # failed pull would otherwise print "repo up to date" and relink stale code.
+  if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+    ok "repo up to date"
+  else
+    warn "git pull failed - continuing with the existing checkout (may be stale)"
+  fi
 else
   info "cloning $REPO_URL"
   mkdir -p "$(dirname "$REPO_PATH")"
@@ -143,6 +162,9 @@ declare -A LINKS=(
 for link in "${!LINKS[@]}"; do
   target="${LINKS[$link]}"
   current="$(readlink -f "$link" 2>/dev/null || echo "")"
+  # Always assert the exec bit, even on the "already linked" skip path, so a
+  # refresh run repairs a target that somehow lost +x.
+  chmod +x "$target" 2>/dev/null || true
   if [ "$current" = "$(readlink -f "$target")" ]; then
     skip "$link -> $target"
   else
@@ -152,7 +174,6 @@ for link in "${!LINKS[@]}"; do
       info "backed up existing $link to $bk"
     fi
     ln -sfn "$target" "$link"
-    chmod +x "$target"
     ok "$link -> $target"
   fi
 done
@@ -241,6 +262,12 @@ step "claude code settings"
 SETTINGS="/root/.claude/settings.json"
 mkdir -p "$(dirname "$SETTINGS")"
 if [ ! -f "$SETTINGS" ]; then
+  # NOTE (security posture): this default is UNATTENDED-FRIENDLY but permissive -
+  # every instance runs Claude as root with auto-approve (defaultMode=auto +
+  # skipAutoPermissionPrompt) and remote control on, so a prompt-injected agent
+  # can take destructive root actions with no human gate. That is intentional for
+  # this homelab's remote-control workflow. To require manual approval instead,
+  # set defaultMode to "default" and remove skipAutoPermissionPrompt below.
   cat > "$SETTINGS" <<'EOF'
 {
   "permissions": { "defaultMode": "auto" },
@@ -257,14 +284,18 @@ EOF
   ok "wrote $SETTINGS"
 elif ! grep -q '"statusLine"' "$SETTINGS"; then
   python3 - <<PY
-import json
+import json, sys
 from pathlib import Path
 p = Path("$SETTINGS")
-s = json.loads(p.read_text())
+try:
+    s = json.loads(p.read_text())
+except (json.JSONDecodeError, OSError) as e:
+    sys.stderr.write(f"settings.json is not valid JSON ({e}); leaving it untouched\n")
+    sys.exit(0)
 s.setdefault("statusLine", {"type": "command", "command": "/usr/local/bin/claude-statusline"})
 p.write_text(json.dumps(s, indent=2) + "\n")
 PY
-  ok "added statusLine block to $SETTINGS"
+  ok "added statusLine block to $SETTINGS (or left a hand-edited invalid file untouched)"
 else
   skip "$SETTINGS (statusLine already present)"
 fi

@@ -2,5 +2,8 @@
 __pycache__/
 *.pyc
 
+# Local Claude Code journal / conversation transcripts - never publish these.
+journal/
+
 # Note: client/claude-instances-<host>.cfg files ARE tracked on purpose -
 # clients git-pull them to receive auto-generated SSH aliases. Don't ignore them.
