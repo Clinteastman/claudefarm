@@ -36,6 +36,7 @@ Catppuccin Mocha colour scheme throughout.
         │   ●  main                                                                 │
         │     new instance                                                       │
         │   ▎ sync ssh aliases                                                    │
+        │     container shell (maintenance)                                      │
         │     quit                                                               │
         │                                                                           │
         │  ───────────────────────────────────────────────────────────────────────  │
@@ -46,6 +47,13 @@ Catppuccin Mocha colour scheme throughout.
 Each row is a long-running Claude Code session living in its own tmux session
 and systemd unit. Pick one, hit enter, you're attached. Detach (Ctrl-B d)
 and the conversation keeps running on the server.
+
+**`container shell (maintenance)`** drops you into a login shell on the box
+that hosts every instance - for sysadmin chores like updating Claude Code
+(`npm install -g @anthropic-ai/claude-code`, then restart instances to pick it
+up), poking systemd, or anything else. Type `exit` to come back to the menu.
+Handy when a client auto-launches `claude-mgr` on connect, so the TUI is the
+only thing you land in.
 
 ---
 

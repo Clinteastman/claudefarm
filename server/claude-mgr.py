@@ -682,6 +682,7 @@ def tui_main():
             options.append((f"{mark}  {i['name']}", ("inst", i["name"])))
         options.append((f"{ICON_PLUS}  new instance", ("new", None)))
         options.append((f"{ICON_REFRESH}  sync ssh aliases", ("sync", None)))
+        options.append((f"{ICON_SERVER}  container shell (maintenance)", ("shell", None)))
         options.append((f"{ICON_BACK}  quit", ("quit", None)))
 
         ans = select_in_box(render_instances_table(insts), options)
@@ -697,6 +698,8 @@ def tui_main():
             clear_screen()
             console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
             input("press enter to continue...")
+        elif ans[0] == "shell":
+            tui_shell()
         elif ans[0] == "inst":
             tui_instance_menu(ans[1])
 
@@ -960,6 +963,70 @@ def tui_create():
             os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{name}"])
     else:
         input("press enter to continue...")
+
+
+def claude_version() -> str:
+    """Best-effort `claude --version`; returns 'unknown' if the binary is
+    missing, errors, or hangs - so the maintenance banner never crashes or
+    stalls the TUI. The short timeout matters: this banner is exactly where
+    you go when claude is broken / half-reinstalled, and a wedged binary must
+    not block you out of the shell you need to fix it (TimeoutExpired is a
+    SubprocessError, so it's already covered below)."""
+    try:
+        out = subprocess.run(["claude", "--version"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+        return out or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def container_shell_banner() -> Text:
+    """Maintenance banner shown before dropping to a login shell on the box
+    that hosts every instance (update claude-code, poke systemd, etc.)."""
+    t = Text()
+    t.append(f"{ICON_SERVER} ", style=C_LAVENDER)
+    t.append("container shell", style="title")
+    t.append("  on  ", style="muted")
+    t.append(f"{HOSTNAME_TAG}\n\n", style="host")
+    t.append("  A login shell on the box that hosts every Claude instance,\n", style="value")
+    t.append("  for maintenance and updates.\n\n", style="value")
+    t.append("  claude-code  ", style="muted")
+    t.append(f"{claude_version()}\n", style="value")
+    t.append("  update       ", style="muted")
+    t.append("npm install -g @anthropic-ai/claude-code\n", style="info")
+    t.append("  then         ", style="muted")
+    t.append("restart instances so they pick up the new version\n", style="value")
+    return t
+
+
+def tui_shell():
+    """Drop the user into an interactive login shell on the container, then
+    return to the menu when they exit. claude-mgr already runs locally on the
+    box that owns the instances, so this is a plain child shell - no SSH hop."""
+    clear_screen()
+    # Top-anchored (not print_centered like other panels) on purpose: the
+    # login shell spawns right below the banner, so a centred/vertically-padded
+    # panel would leave the prompt stranded in the middle of the screen.
+    console.print(render_screen(
+        container_shell_banner(),
+        footer_hint="type exit (or Ctrl-D) to return to claude-mgr",
+    ))
+    console.print()
+    shell = os.environ.get("SHELL") or "/bin/bash"
+    # Login shell so /etc/profile.d/claude-mgr.sh (PATH, CLAUDE_MGR_*,
+    # COLORTERM, ...) AND ~/.bashrc are sourced via /root/.profile - matches an
+    # interactive SSH login to this box. Fall back to /bin/bash if $SHELL is
+    # missing/unexecutable, and swallow a stray Ctrl-C that reaches the parent
+    # during the wait so it returns to the menu instead of unwinding tui_main()
+    # and quitting claude-mgr.
+    for candidate in (shell, "/bin/bash"):
+        try:
+            subprocess.call([candidate, "-l"])
+            break
+        except OSError:
+            continue
+        except KeyboardInterrupt:
+            break
 
 # ---- CLI ---------------------------------------------------------------------
 

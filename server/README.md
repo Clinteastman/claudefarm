@@ -101,6 +101,11 @@ claude-mgr
 
 Pick "new instance", give it a name, choose a workdir. Done.
 
+The top-level menu also has **"container shell (maintenance)"**, which drops
+you into a login shell on the host for sysadmin chores (e.g. updating
+claude-code with `npm install -g @anthropic-ai/claude-code`, then restarting
+instances so they pick up the new version). Type `exit` to return to the menu.
+
 ## Per-host config
 
 `/etc/claude-mgr.conf` is sourced into the environment by
