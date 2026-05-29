@@ -147,8 +147,8 @@ a TTY. Use it to start / stop / restart / create instances from any client.
 ssh claude-restart-<server>-<instance>
 ```
 
-Kills the current Claude conversation, starts a fresh one, Telegrams the
-new claude.ai URL. Useful when you want a clean slate.
+Kills the current Claude conversation, starts a fresh one, and sends a
+Telegram notification. Useful when you want a clean slate.
 
 ## Refreshing aliases
 
@@ -410,5 +410,4 @@ To wire it in, add this to `~/.claude/settings.json` (Linux/macOS) or
 ```
 
 Shows model, context %, cost, 5-hour rate-limit (when high), worktree, vim
-mode, output style, and the `Remote: On/Off` badge from
-`@hoangvu12/claude-remote` if you use that npm package.
+mode, and output style.

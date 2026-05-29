@@ -1,13 +1,11 @@
 # claudefarm
 
 > Run many Claude Code conversations in parallel on one Linux machine, attach
-> to them from any laptop, phone, or terminal — never lose your place.
+> to them from any laptop or terminal - never lose your place.
 
 systemd keeps each conversation alive. tmux keeps the buffer in memory across
-disconnects. The [claude.ai Remote Control](https://docs.claude.com/en/docs/claude-code/remote-control)
-URL gets pinged to Telegram every time an instance starts, so you can
-seamlessly switch between desktop browser, phone app, and SSH terminal —
-all attached to the **same** session.
+disconnects. Telegram notifies you when an instance starts so you know it is
+ready and how to SSH in.
 
 Catppuccin Mocha colour scheme throughout.
 
@@ -21,14 +19,14 @@ Catppuccin Mocha colour scheme throughout.
         │                            claude-mgr  on  k12                            │
         │  ───────────────────────────────────────────────────────────────────────  │
         │                                                                           │
-        │   ╭────┬───────────┬────────┬─────────┬──────┬─────────────────┬────────╮ │
-        │   │    │ name      │ mode   │ state   │ tmux │  workdir       │  url   │ │
-        │   ├────┼───────────┼────────┼─────────┼──────┼─────────────────┼────────┤ │
-        │   │ ●  │ gscontent │ code   │ running │   ✓  │ /data/dev/gsc.. │ /cli/. │ │
-        │   │ ●  │ homelab   │ code   │ running │   ✓  │ /data/dev/k12.. │ /cli/. │ │
-        │   │ ●  │ scratch   │ agents │ running │   ✓  │ /data/dev/scra. │   —    │ │
-        │   │ ●  │ main      │ code   │ running │   ✓  │ /root           │ /cli/. │ │
-        │   ╰────┴───────────┴────────┴─────────┴──────┴─────────────────┴────────╯ │
+        │   ╭────┬───────────┬────────┬─────────┬──────┬─────────────────╮ │
+        │   │    │ name      │ mode   │ state   │ tmux │  workdir        │ │
+        │   ├────┼───────────┼────────┼─────────┼──────┼─────────────────┤ │
+        │   │ ●  │ gscontent │ code   │ running │   ✓  │ /data/dev/gsc.. │ │
+        │   │ ●  │ homelab   │ code   │ running │   ✓  │ /data/dev/k12.. │ │
+        │   │ ●  │ scratch   │ agents │ running │   ✓  │ /data/dev/scra. │ │
+        │   │ ●  │ main      │ code   │ running │   ✓  │ /root           │ │
+        │   ╰────┴───────────┴────────┴─────────┴──────┴─────────────────╯ │
         │                                                                           │
         │   ●  gscontent                                                            │
         │   ●  homelab                                                              │
@@ -65,9 +63,9 @@ only thing you land in.
 - **Conversations survive disconnects.** The Claude process lives in tmux
   on the server. Close your laptop, drop your VPN, swap WiFi networks —
   the conversation is exactly where you left it.
-- **Phone + terminal + desktop, same session.** The Telegram-pinged
-  `claude.ai/cli/...` URL works in the iOS/Android Claude app. Talk to
-  the same Claude from the train as from your desk.
+- **Access from anywhere over SSH.** `ssh claude-<host>-<instance>` from
+  any machine that can reach the server. Telegram notifies you when an
+  instance (re)starts so you always know how to reconnect.
 - **Cheap.** A 1 GB LXC or VPS hosts a dozen instances comfortably.
 - **No new SaaS.** Your existing Claude account, your own server, plain
   SSH. No third-party broker.
@@ -151,7 +149,7 @@ and what to do if you'd rather install manually.
 curl -sSL https://raw.githubusercontent.com/Clinteastman/claudefarm/main/server/bootstrap.sh | bash
 claude-mgr                    # TUI picker → "new instance" → name it, give it a workdir
                               # claude-mgr creates the systemd unit, starts the instance,
-                              # opens tmux, pings the claude.ai URL to Telegram
+                              # opens tmux, sends a Telegram notification
 
 # On any client (laptop, second server, etc.)
 curl -sSL https://raw.githubusercontent.com/Clinteastman/claudefarm/main/client/setup-client.sh | bash
@@ -183,7 +181,7 @@ claudefarm/
     ├── README.md                       per-platform client docs
     ├── setup-client.sh                 Linux + macOS installer
     ├── setup-client.ps1                Windows installer
-    ├── claude-statusline.py            local Claude statusline (with Remote: On/Off badge)
+    ├── claude-statusline.py            local Claude statusline
     ├── ssh-config.example              sample SSH config block
     └── claude-instances-<host>.cfg     auto-generated per server (don't edit)
 ```
@@ -198,11 +196,11 @@ claude-mgr                    # → pick "homelab"
 
 # Lunch: walk away, leave the terminal open. The instance keeps running.
 
-# Mid-afternoon, on a train: open the Claude iOS app, paste the
-# claude.ai/cli/... URL from this morning's Telegram message. Same session.
+# Mid-afternoon, elsewhere: SSH in from any machine.
+ssh claude-k12-homelab        # drops straight into the tmux session
 
 # Evening: back at the desk, claude-mgr → "homelab" again. Tmux scrollback
-# shows everything you said on the phone.
+# shows everything from earlier in the day.
 ```
 
 ---
@@ -212,10 +210,9 @@ claude-mgr                    # → pick "homelab"
 - **Per-instance systemd units** — instances survive reboots, are
   individually start/stop/restart-able, and you get all the usual
   `systemctl status`, `journalctl -u` introspection.
-- **Telegram URL pings** — every time an instance starts, the new
-  `claude.ai/cli/...` URL is sent to your Telegram chat. Open it in any
-  browser or the Claude mobile app to attach as a *second* concurrent
-  client.
+- **Telegram restart notifications** - every time an instance starts,
+  a Telegram message tells you the instance name and the SSH command to
+  reach it. Useful after reboots or manual restarts.
 - **Auto-generated SSH aliases** — `claude-mgr` writes
   `client/claude-instances-<host>.cfg` whenever you add/remove instances.
   Commit + push the repo and clients pull to get the new aliases. No
@@ -248,9 +245,8 @@ claude-mgr                    # → pick "homelab"
 | **Client** | Linux / macOS / Windows. Git + OpenSSH. Network reachability to the server (LAN, Tailscale, WireGuard — claudefarm doesn't care). |
 
 A Telegram bot + chat ID is **optional but recommended** — without it
-you won't get the new claude.ai URL pinged when an instance restarts.
-You can still see it via `claude-mgr url <name>` or by attaching to the
-tmux session directly.
+you won't get notified when an instance restarts. You can always attach
+via `ssh claude-<host>-<instance>` or `claude-mgr` directly.
 
 ---
 
@@ -264,10 +260,9 @@ your existing SSH config is the gate.
   passwords; consider `PermitRootLogin prohibit-password` etc. The
   scripts run as root by default because systemd units are easier that
   way; you can change the unit's User= if you'd rather not.
-- **The claude.ai URLs** are unguessable but capability-style: anyone
-  who has the URL can attach to that session. They're sent to your
-  Telegram chat, which should be private. Treat the URLs like passwords
-  if you forward them elsewhere.
+- **Session access is SSH-only.** Attach via `ssh claude-<host>-<instance>`
+  or through the `claude-mgr` TUI. No browser-accessible URLs are
+  generated or shared.
 - **No public ports needed.** The server only needs outbound HTTPS
   (Claude API, Telegram, optional GitHub pull). Clients only need
   outbound SSH to the server.
@@ -288,7 +283,6 @@ your existing SSH config is the gate.
 | `s` | Stop highlighted instance |
 | `S` | Start a stopped instance |
 | `d` | Delete highlighted instance (asks to confirm) |
-| `u` | Show the current `claude.ai/cli/...` URL for the highlighted instance |
 | `y` | Sync SSH aliases (writes `client/claude-instances-<host>.cfg`; commit + push the repo yourself to share) |
 | `?` | Help overlay |
 | `q` | Quit |
@@ -314,10 +308,9 @@ claude-mgr start <name>                    # start (or convert) an instance
                                            #   --mode {code,agents}    (default code)
                                            #   --no-venv
 claude-mgr stop <name>                     # stop a running instance
-claude-mgr restart <name>                  # restart (fresh claude.ai URL in code mode)
+claude-mgr restart <name>                  # restart (sends Telegram notification)
 claude-mgr remove <name>                   # remove the systemd unit + tmux session
                                            #   --purge-workdir
-claude-mgr url <name>                      # print the current claude.ai/cli/... URL
 claude-mgr sync-ssh                        # regenerate the client SSH config (commit + push yourself)
 claude-mgr add-venv <name>                 # create .venv in the instance's workdir
 claude-mgr clean-venv <name>               # rebuild .venv from scratch
@@ -384,7 +377,6 @@ gold.
 - [server/README.md](server/README.md) — server install, config reference, Telegram setup, troubleshooting
 - [client/README.md](client/README.md) — per-platform client install, manual fallback, troubleshooting
 - [Claude Code docs](https://docs.claude.com/en/docs/claude-code) — upstream Claude Code (the thing claudefarm runs N of)
-- [Remote Control](https://docs.claude.com/en/docs/claude-code/remote-control) — the feature that lets phone/desktop/terminal share a session
 
 ---
 

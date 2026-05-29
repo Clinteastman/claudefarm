@@ -24,7 +24,7 @@ instances. Install with one command, manage with `claude-mgr`.
 - Root or sudo access (the script must write `/etc/systemd/system/`)
 - Internet access (apt + npm + git fetches)
 - ~1 GB RAM idle, ~5 GB disk for claude-code + node_modules + your repos
-- Optional: a Telegram bot + chat ID (so URLs ping your phone)
+- Optional: a Telegram bot + chat ID (so restart notifications reach you)
 
 ## Install
 
@@ -53,7 +53,7 @@ What it does, in order:
 8. **Per-host config** - writes `/etc/claude-mgr.conf` with sensible
    defaults from your hostname + LAN IP. Edit to taste.
 9. **Claude Code settings** - writes (or merges) `/root/.claude/settings.json`
-   with the statusline command and `remoteControlAtStartup: true`.
+   with the statusline command and `remoteControlAtStartup: false`.
 
 ## After install
 
@@ -61,7 +61,7 @@ Three interactive steps, in this order:
 
 ### 1. Set up Telegram (optional but recommended)
 
-Drop a config at one of these paths so the wrapper script can ping URLs to you:
+Drop a config at one of these paths so the wrapper script can send restart notifications:
 
 - `/root/.config/telegram_notify.json`
 - `~/.nanobot/config.json`
@@ -196,9 +196,8 @@ claude-mgr start <name>                      # creates if needed, runs in /root
 claude-mgr start <name> --workdir /path
 claude-mgr start <name> --clone https://github.com/foo/bar.git
 claude-mgr stop <name>
-claude-mgr restart <name>                    # kills convo, fresh URL via Telegram
+claude-mgr restart <name>                    # kills convo, starts fresh, Telegram notification
 claude-mgr attach <name>                     # tmux attach
-claude-mgr url <name>                        # last claude.ai URL captured
 claude-mgr remove <name>                     # stop + disable, KEEP workdir
 claude-mgr remove <name> --purge-workdir     # also delete workdir
 claude-mgr sync-ssh                          # regenerate the alias file
@@ -237,7 +236,7 @@ file stays current. Commit + push the repo to share with clients.
 | `bootstrap.sh`                      | -                              | Idempotent installer / upgrader. Curl + bash. |
 | `claude-mgr.py`                     | `/usr/local/bin/claude-mgr`    | TUI + CLI. Cathedral of menus + commands. |
 | `claude-statusline.py`              | `/usr/local/bin/claude-statusline` | Per-instance Claude statusline (model, ctx %, cost, instance name). |
-| `claude-remote-with-telegram.sh`    | `/usr/local/bin/claude-remote-with-telegram.sh` | Wrapper run by systemd. Spawns `claude` in tmux, scrapes URL, Telegrams. |
+| `claude-remote-with-telegram.sh`    | `/usr/local/bin/claude-remote-with-telegram.sh` | Wrapper run by systemd. Spawns `claude` in tmux, sends Telegram notification on start. |
 | `claude-remote@.service`            | `/etc/systemd/system/claude-remote@.service` | systemd template. One unit per instance: `claude-remote@<name>.service`. |
 | `tmux.conf`                         | `/root/.tmux.conf`             | Catppuccin Mocha tmux config with Nerd Font icons. |
 | `cheatsheet`                        | `/usr/local/bin/cheatsheet`    | Type `cheatsheet` for tmux + claude-mgr quick-ref. |
@@ -265,7 +264,7 @@ The wrapper exited (probably because `claude` itself crashed or was
 killed). Check `journalctl -u claude-remote@<name>.service -n 100` for
 the underlying error. systemd will restart it after `RestartSec=15`.
 
-### Telegram isn't receiving URLs
+### Telegram isn't receiving restart notifications
 
 1. `/root/telegram_notify.py` exists and is executable.
 2. Config has the right token + chat ID.
