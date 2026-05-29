@@ -81,11 +81,16 @@ for _f in .credentials.json settings.json; do
         ln -s "$CANON/$_f" "$CLAUDE_CONFIG_DIR/$_f"
     fi
 done
-# App state (.claude.json: onboarding / workspace-trust, mutated per instance):
-# copy ONCE, kept private. NB: a re-login does NOT refresh these copies - wipe
+# App state (.claude.json: onboarding-complete flag + per-project workspace
+# trust, mutated per instance): copy ONCE, kept private. This file lives at
+# $HOME/.claude.json, NOT inside ~/.claude - seeding it is what stops a fresh
+# config dir from dropping into first-run onboarding / a trust prompt (which
+# blocks before the remote-control URL appears and makes the unit fail to start).
+# NB: a re-login does NOT refresh these copies - wipe
 # /root/.claude-instances/*/.claude.json after rotating credentials.
-if [ -e "$CANON/.claude.json" ] && [ ! -e "$CLAUDE_CONFIG_DIR/.claude.json" ]; then
-    cp "$CANON/.claude.json" "$CLAUDE_CONFIG_DIR/.claude.json"
+APPSTATE="${HOME:-/root}/.claude.json"
+if [ -e "$APPSTATE" ] && [ ! -e "$CLAUDE_CONFIG_DIR/.claude.json" ]; then
+    cp "$APPSTATE" "$CLAUDE_CONFIG_DIR/.claude.json"
     chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json" 2>/dev/null || true
 fi
 echo "[$(date -Is)] CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR" | tee -a "$LOG"
