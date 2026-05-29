@@ -1,9 +1,9 @@
 #!/bin/bash
-# Spawns one interactive `claude` instance inside its own tmux session.
-# `remoteControlAtStartup=true` in settings.json makes that session register
-# with Anthropic Remote Control so phone/desktop app reach the SAME conversation
-# that ssh+tmux attaches to. Telegrams the URL on each (re)start.
-# Designed for systemd Restart=always.
+# Spawns one interactive `claude` instance inside its own tmux session and
+# Telegrams a notification on each (re)start. Reach the session over ssh+tmux
+# (`ssh claude-<instance>`). Designed for systemd Restart=always.
+# (Native Claude Code remote control / the claude.ai URL handoff was removed -
+#  see git history; settings.json now sets remoteControlAtStartup=false.)
 #
 # Usage: claude-remote-with-telegram.sh <instance>
 #   <instance>: short label (e.g. main, dev, personal). Tmux session and
@@ -118,10 +118,8 @@ while IFS= read -r _name; do
     [ -n "${_name:-}" ] && TMUX_ENV_ARGS+=(-e "${_name}=${!_name}")
 done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|HONCHO_|VIRTUAL_ENV)/ {print $1} /^(PATH|HOME|COLORTERM)=/ {print $1}')
 
-# Mode: "code" (default - single Claude Code session, gets its own
-# claude.ai Remote Control URL) or "agents" (the new `claude agents`
-# multi-agent TUI from Claude Code v2.1.139+; each dispatched agent
-# inside it gets its own URL, the wrapper doesn't capture one).
+# Mode: "code" (default - a single `claude` session) or "agents" (the
+# `claude agents` multi-agent TUI from Claude Code v2.1.139+).
 MODE="${CLAUDE_MODE:-code}"
 if [ "$MODE" = "agents" ]; then
     INNER_CMD=(claude agents)
@@ -137,36 +135,26 @@ tmux new-session -d -s "$SESSION" -c "$WORKDIR" "${TMUX_ENV_ARGS[@]}" "${INNER_C
 tmux set-option -t "$SESSION" window-size latest 2>/dev/null || true
 tmux set-option -t "$SESSION" -w aggressive-resize on 2>/dev/null || true
 
-# Wait for the claude.ai Remote Control URL to surface in the pane (up
-# to ~90s). Only meaningful in code mode; in agents mode the surrounding
-# session has no URL of its own (each dispatched agent has its own).
-URL=""
-if [ "$MODE" = "code" ]; then
-  for i in $(seq 1 45); do
-    sleep 2
-    PANE=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || true)
-    URL=$(echo "$PANE" | grep -oE 'https://claude\.ai[a-zA-Z0-9./_?=&%+-]+' | head -1)
-    [[ -n "$URL" ]] && break
-  done
-
-  # Fail fast if URL never surfaced: claude likely crashed or got stuck on
-  # auth. Exit non-zero so systemd restarts us instead of leaving the unit
-  # "active" with a broken claude inside.
-  if [ -z "$URL" ]; then
-    echo "[$(date -Is)] no claude.ai URL after 90s; treating as failed start, exiting for systemd restart" | tee -a "$LOG"
-    /root/telegram_notify.py "LXC 105 Claude instance '${INSTANCE}' failed to start (no URL captured after 90s); systemd will retry." \
+# Remote control was removed, so there's no claude.ai URL to capture. Give
+# claude a few seconds to come up, then confirm it's actually running - a crash
+# or an auth failure leaves the pane on a shell. Fail fast so systemd retries
+# instead of leaving the unit "active" with a broken claude inside.
+sleep 8
+STARTUP_CMD=$(tmux list-panes -t "$SESSION" -F '#{pane_current_command}' 2>/dev/null | head -1)
+case "$STARTUP_CMD" in
+  node|claude|claude.exe|bun) : ;;   # claude is up
+  *)
+    echo "[$(date -Is)] claude not running after start (pane='$STARTUP_CMD'); failed start, exiting for systemd restart" | tee -a "$LOG"
+    /root/telegram_notify.py "LXC 105 Claude instance '${INSTANCE}' failed to start (claude not running); systemd will retry." \
       >>/var/log/claude-remote-telegram.log 2>&1 || true
     tmux kill-session -t "$SESSION" 2>/dev/null || true
-    exit 1
-  fi
-fi
+    exit 1 ;;
+esac
 
 if [ "$MODE" = "agents" ]; then
   MSG="LXC 105 Claude instance '${INSTANCE}' (re)started in AGENTS mode.
 
-This session is the 'claude agents' multi-agent TUI. Dispatch agents
-from inside; each dispatched agent has its own claude.ai URL shown in
-the peek panel (Space).
+This session is the 'claude agents' multi-agent TUI. Dispatch agents from inside.
 
 Terminal: ssh claude-${INSTANCE}  (or: ssh root@192.168.50.62 -t tmux a -t $SESSION)
 Workdir: ${WORKDIR}
@@ -175,7 +163,6 @@ Detach from tmux with Ctrl+b then d (do NOT Ctrl+C - that kills the TUI)."
 else
   MSG="LXC 105 Claude instance '${INSTANCE}' (re)started.
 
-Phone/desktop app: ${URL:-NO URL CAPTURED - check tmux}
 Terminal: ssh claude-${INSTANCE}  (or: ssh root@192.168.50.62 -t tmux a -t $SESSION)
 Workdir: ${WORKDIR}
 
@@ -185,9 +172,7 @@ fi
 /root/telegram_notify.py "$MSG" >>/var/log/claude-remote-telegram.log 2>&1 || \
   echo "[$(date -Is)] Telegram failed" | tee -a "$LOG"
 
-# Don't log the capability URL itself (it's a password-equivalent); just whether
-# one was captured. The URL still goes to Telegram, which is the intended sink.
-echo "[$(date -Is)] URL=$( [ -n "$URL" ] && echo captured || echo none ); entering watchdog loop for instance=$INSTANCE" | tee -a "$LOG"
+echo "[$(date -Is)] started; entering watchdog loop for instance=$INSTANCE" | tee -a "$LOG"
 
 # Keep this script alive so systemd treats us as the long-running unit.
 # Exit when the tmux session dies OR when claude crashes inside it

@@ -272,7 +272,7 @@ if [ ! -f "$SETTINGS" ]; then
 {
   "permissions": { "defaultMode": "auto" },
   "theme": "dark",
-  "remoteControlAtStartup": true,
+  "remoteControlAtStartup": false,
   "skipAutoPermissionPrompt": true,
   "agentPushNotifEnabled": true,
   "statusLine": {
