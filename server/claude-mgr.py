@@ -240,6 +240,11 @@ def read_mode(name: str) -> str:
 
 
 def last_url(name: str) -> str | None:
+    # Agents-mode instances have no URL of their own (each dispatched agent gets
+    # its own). Scanning the journal here would surface a child agent's URL and
+    # mislabel it as the instance URL, so skip it entirely for agents mode.
+    if read_mode(name) == "agents":
+        return None
     out = run(["journalctl", "-u", f"claude-remote@{name}.service",
                "--no-pager", "-n", "200"]).stdout
     m = list(re.finditer(r"https://claude\.ai[a-zA-Z0-9./_?=&%+-]+", out))

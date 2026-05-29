@@ -43,12 +43,35 @@ if [ -f "$WORKDIR/.venv/bin/activate" ]; then
     echo "[$(date -Is)] activated venv at $WORKDIR/.venv" | tee -a "$LOG"
 fi
 
+# Per-instance Claude config dir. All instances run as root (HOME=/root), so
+# without this they share /root/.claude - including the agent-view SUPERVISOR
+# (daemon/roster.json + the IPC sockets in daemon/). That shared supervisor is
+# why `claude agents` in one instance ingests a plain `claude` session from
+# another instance and then both crash. Isolate the config dir per instance and
+# share only the login + settings from the canonical /root/.claude.
+CANON="/root/.claude"
+CLAUDE_CONFIG_DIR="/root/.claude-instances/$INSTANCE"
+export CLAUDE_CONFIG_DIR
+mkdir -p "$CLAUDE_CONFIG_DIR"
+# Login token: symlink so a re-login / token refresh propagates to all instances.
+if [ -e "$CANON/.credentials.json" ] && [ ! -e "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then
+    ln -s "$CANON/.credentials.json" "$CLAUDE_CONFIG_DIR/.credentials.json"
+fi
+# Settings + app state (onboarding / workspace-trust): copy ONCE per instance
+# (writable, seeded from canonical) so the instance doesn't re-run onboarding.
+for _f in settings.json .claude.json; do
+    if [ -e "$CANON/$_f" ] && [ ! -e "$CLAUDE_CONFIG_DIR/$_f" ]; then
+        cp "$CANON/$_f" "$CLAUDE_CONFIG_DIR/$_f"
+    fi
+done
+echo "[$(date -Is)] CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR" | tee -a "$LOG"
+
 # Build a list of -e flags so any env var the systemd unit handed us
 # (CLAUDE_*, PREVIEW_*, TELEGRAM_*, plus VIRTUAL_ENV/PATH from venv) reaches
 # the new tmux session and therefore Claude. Without this, only what we name
 # explicitly survives - tmux servers shared across instances don't
 # auto-propagate the wrapper's env to new sessions.
-TMUX_ENV_ARGS=(-e "CLAUDE_INSTANCE=$INSTANCE")
+TMUX_ENV_ARGS=(-e "CLAUDE_INSTANCE=$INSTANCE" -e "CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR")
 
 # In agents mode, set CLAUDE_AGENTS_PARENT so the awtrix hooks know to
 # route their state writes to <STATE_DIR>/<parent>/<pid>.json (the
@@ -80,7 +103,7 @@ else
 fi
 
 tmux new-session -d -s "$SESSION" "${TMUX_ENV_ARGS[@]}" "$INNER_CMD"
-tmux set-option -t "$SESSION" -g window-size latest 2>/dev/null || true
+tmux set-option -t "$SESSION" window-size latest 2>/dev/null || true
 tmux set-option -t "$SESSION" -w aggressive-resize on 2>/dev/null || true
 
 # Wait for the claude.ai Remote Control URL to surface in the pane (up
