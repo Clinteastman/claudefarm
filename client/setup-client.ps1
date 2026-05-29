@@ -105,7 +105,7 @@ if (-not $Pubkey) {
     Warn "no SSH key found in $SshDir"
     $ans = Read-Host "    $Cs?$N Generate one now (ed25519, no passphrase)? [Y/n]"
     if ($ans -notmatch "^[nN]") {
-        ssh-keygen -t ed25519 -f "$SshDir\id_ed25519" -N '""' -C "$env:USERNAME@$env:COMPUTERNAME" | Out-Null
+        ssh-keygen -t ed25519 -f "$SshDir\id_ed25519" -N '' -C "$env:USERNAME@$env:COMPUTERNAME" | Out-Null
         $Pubkey = "$SshDir\id_ed25519.pub"
         Ok "generated $Pubkey"
     } else {
@@ -130,7 +130,7 @@ if ((Test-Path $SshCfg) -and ((Get-Content $SshCfg -Raw) -match [regex]::Escape(
     Info "edit it to:  $IncludeLine"
 } else {
     if (Test-Path $SshCfg) {
-        $bk = "$SshCfg.pre-claudefarm-$([int][double]::Parse((Get-Date -UFormat %s))).bak"
+        $bk = "$SshCfg.pre-claudefarm-$(Get-Date -Format yyyyMMddHHmmss).bak"
         Copy-Item $SshCfg $bk
         Info "backed up $SshCfg to $bk"
         $existing = Get-Content $SshCfg -Raw
@@ -152,10 +152,13 @@ Write-Host "$N"
 
 $ans = Read-Host "    $Cs?$N Try to copy this key to ${ServerUser}@${ServerHost} now? [Y/n]"
 if ($ans -notmatch "^[nN]") {
-    # Windows OpenSSH doesn't ship ssh-copy-id - do it via type | ssh
-    $pubContent = Get-Content $Pubkey -Raw
+    # Windows OpenSSH doesn't ship ssh-copy-id - do it via stdin | ssh. Stream
+    # the key over stdin and have the remote read it with $(cat), so a quote or
+    # metacharacter in the key comment can't break out of the remote command.
+    $pubContent = (Get-Content $Pubkey -Raw).Trim()
+    $remoteCmd  = 'umask 077; mkdir -p ~/.ssh; k=$(cat); grep -qxF "$k" ~/.ssh/authorized_keys 2>/dev/null || printf "%s\n" "$k" >> ~/.ssh/authorized_keys'
     try {
-        $pubContent | ssh "${ServerUser}@${ServerHost}" "umask 077; mkdir -p ~/.ssh && grep -qxF '$($pubContent.Trim())' ~/.ssh/authorized_keys 2>/dev/null || echo '$($pubContent.Trim())' >> ~/.ssh/authorized_keys"
+        $pubContent | ssh "${ServerUser}@${ServerHost}" $remoteCmd
         Ok "pubkey installed on $ServerHost"
     } catch {
         Warn "could not install via ssh - paste the key above into ~/.ssh/authorized_keys on $ServerHost manually"

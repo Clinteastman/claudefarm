@@ -85,14 +85,20 @@ def remote_status() -> str | None:
     is_active = False
     try:
         flag_pid = int(flag.read_text().strip())
-        if flag_pid and rc_pid and flag_pid == rc_pid:
+    except (FileNotFoundError, ValueError):
+        flag_pid = None
+    if flag_pid and rc_pid and flag_pid == rc_pid:
+        try:
             os.kill(flag_pid, 0)
             is_active = True
-    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError, OSError):
-        try:
-            flag.unlink()
+        except PermissionError:
+            # Process exists but is owned by another user - it's alive.
+            is_active = True
         except OSError:
-            pass
+            # Dead (ProcessLookupError) or a transient error - report Off, but
+            # never unlink the daemon's flag file from a read-only statusline
+            # (the old code deleted live daemon state on PermissionError/OSError).
+            is_active = False
 
     if is_active:
         return colour("● On", GREEN, BOLD)

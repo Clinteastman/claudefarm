@@ -81,7 +81,9 @@ if ($clip::ContainsFileDropList()) {
     foreach ($f in $files) {
         if (-not (Test-Path $f -PathType Leaf)) { continue }   # skip dirs for now
         $i++
-        $stem = [System.IO.Path]::GetFileName($f)
+        # Sanitise the filename so it can't inject into the remote scp path
+        # (legacy-rcp CVE-2020-15778 class); Windows allows ; $ ` spaces ( ) in names.
+        $stem = ([System.IO.Path]::GetFileName($f)) -replace '[^A-Za-z0-9._-]','_'
         $remoteName = "$ts-$i-$stem"
         $remotePaths += (Send-Path-To-Server $f $remoteName)
     }

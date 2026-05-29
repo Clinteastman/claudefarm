@@ -49,7 +49,7 @@ ok "git, ssh, ssh-keygen present"
 
 step "homelab repo location"
 
-DEFAULT_REPO="$HOME/github/k12-homelab"
+DEFAULT_REPO="$HOME/github/claudefarm"
 prompt "Clone (or use) the homelab repo at [${DEFAULT_REPO}]:"
 read -r REPO_PATH < /dev/tty
 REPO_PATH="${REPO_PATH:-$DEFAULT_REPO}"

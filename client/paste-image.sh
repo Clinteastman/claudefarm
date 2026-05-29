@@ -107,13 +107,23 @@ collect_clipboard_files() {
         line="${line%$'\r'}"
         [ -z "$line" ] && continue
         local p="$line"
-        # X11/Wayland give file:// URIs - strip the prefix
+        # X11/Wayland give file:// URIs - strip the prefix + percent-decode
+        # (the old code only handled %20, silently dropping %C3%A9, %2C, ...).
         case "$p" in
-            file://*) p="$(printf '%b' "${p#file://}" | sed 's/%20/ /g')" ;;
+            file://*)
+                p="${p#file://}"
+                if command -v python3 >/dev/null 2>&1; then
+                    p="$(printf '%s' "$p" | python3 -c 'import sys,urllib.parse as u; sys.stdout.write(u.unquote(sys.stdin.read()))')"
+                else
+                    p="$(printf '%s' "$p" | sed 's/%20/ /g')"
+                fi
+                ;;
         esac
         [ -f "$p" ] || continue   # skip directories
         i=$((i + 1))
-        LOCAL_FILES+=("$p" "${TS}-${i}-$(basename "$p")")
+        # Strip anything outside a safe charset from the remote basename so it
+        # can't inject into the scp remote path (legacy-rcp CVE-2020-15778 class).
+        LOCAL_FILES+=("$p" "${TS}-${i}-$(basename "$p" | tr -dc 'A-Za-z0-9._-')")
     done <<<"$uris"
     [ "${#LOCAL_FILES[@]}" -gt 0 ]
 }
