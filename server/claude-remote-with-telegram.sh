@@ -34,6 +34,10 @@ SESSION_NAME="LXC-105-${INSTANCE}"
 WORKDIR="${CLAUDE_WORKDIR:-/root}"
 LOG="/var/log/claude-remote-${INSTANCE}.log"
 
+# Keep the per-instance log private - it can contain paths and (historically)
+# the capability claude.ai URL. Create it 0600 before anything writes to it.
+touch "$LOG" 2>/dev/null && chmod 600 "$LOG" 2>/dev/null || true
+
 echo "[$(date -Is)] Wrapper starting; instance=$INSTANCE tmux=$SESSION workdir=$WORKDIR" | tee -a "$LOG"
 
 # Clean any stale session for THIS instance only (don't disturb sibling instances)
@@ -176,7 +180,9 @@ fi
 /root/telegram_notify.py "$MSG" >>/var/log/claude-remote-telegram.log 2>&1 || \
   echo "[$(date -Is)] Telegram failed" | tee -a "$LOG"
 
-echo "[$(date -Is)] URL=${URL:-none}; entering watchdog loop for instance=$INSTANCE" | tee -a "$LOG"
+# Don't log the capability URL itself (it's a password-equivalent); just whether
+# one was captured. The URL still goes to Telegram, which is the intended sink.
+echo "[$(date -Is)] URL=$( [ -n "$URL" ] && echo captured || echo none ); entering watchdog loop for instance=$INSTANCE" | tee -a "$LOG"
 
 # Keep this script alive so systemd treats us as the long-running unit.
 # Exit when the tmux session dies OR when claude crashes inside it

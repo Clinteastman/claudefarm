@@ -74,6 +74,9 @@ Format:
 }
 ```
 
+Lock it down - it holds your bot token:
+`chmod 600 /root/.config/telegram_notify.json`
+
 Bot creation: chat with [@BotFather](https://t.me/botfather), `/newbot`,
 follow prompts, paste the token here. Get your chat ID by sending any
 message to your new bot then visiting
