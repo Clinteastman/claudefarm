@@ -628,15 +628,18 @@ def _read_key() -> str:
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
+        # Read raw bytes from the fd, NOT sys.stdin.read(): select() on the
+        # buffered text stream is unreliable (it polls the fd while bytes sit in
+        # Python's io buffer), which made arrow keys spuriously read as a lone
+        # Esc and quit the menu. os.read + select on the integer fd is correct.
+        ch = os.read(fd, 1).decode(errors="ignore")
         if ch == "\x1b":
-            # A lone Esc has no follow-on bytes; don't block on read(2) waiting
-            # for two more keys (that hangs the menu and breaks the advertised
-            # 'esc to go back'). Only consume the arrow tail if it's already there.
-            ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+            # A lone Esc has no follow-on bytes; only consume the arrow tail if
+            # it actually arrives (generous timeout to tolerate SSH jitter).
+            ready, _, _ = select.select([fd], [], [], 0.2)
             if not ready:
                 return "esc"
-            seq = sys.stdin.read(2)
+            seq = os.read(fd, 2).decode(errors="ignore")
             return {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}.get(seq, "esc")
         if ch in ("\r", "\n"):
             return "enter"
