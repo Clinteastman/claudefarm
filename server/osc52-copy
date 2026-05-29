@@ -1,0 +1,6 @@
+#!/bin/sh
+buf=$(cat | base64 | tr -d "\n")
+# Write OSC 52 to the tmux active pane TTY
+for tty in $(tmux list-clients -F "#{client_tty}" 2>/dev/null); do
+  printf "\033]52;c;%s\a" "$buf" > "$tty"
+done

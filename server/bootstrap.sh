@@ -138,6 +138,7 @@ declare -A LINKS=(
   ["/usr/local/bin/claude-mgr"]="$MGR/claude-mgr.py"
   ["/usr/local/bin/claude-statusline"]="$MGR/claude-statusline.py"
   ["/usr/local/bin/claude-remote-with-telegram.sh"]="$MGR/claude-remote-with-telegram.sh"
+  ["/usr/local/bin/osc52-copy"]="$MGR/osc52-copy"
 )
 for link in "${!LINKS[@]}"; do
   target="${LINKS[$link]}"
