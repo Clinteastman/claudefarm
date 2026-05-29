@@ -165,20 +165,66 @@ def tmux(*args: str) -> subprocess.CompletedProcess:
 
 # ---- instance discovery ------------------------------------------------------
 
-INSTANCE_RE = re.compile(r"^claude-remote@([a-zA-Z0-9_-]+)\.service$")
+# Instance names must match this pattern EVERYWHERE - discovery, creation, and
+# every consumer that builds a systemd unit name, a drop-in path, or an SSH
+# config line from the name. Keeping discovery as strict as creation stops an
+# out-of-band unit (uppercase / leading dash) from being trusted and propagated
+# into the client SSH cfg.
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+INSTANCE_RE = re.compile(r"^claude-remote@([a-z0-9][a-z0-9_-]*)\.service$")
+
+
+def valid_name(name: str) -> bool:
+    return bool(NAME_RE.fullmatch(name or ""))
+
+
+def validate_workdir(workdir: str) -> str | None:
+    """Reject workdirs that would break the systemd drop-in (a newline / control
+    char injects extra directives that then run as root) or aren't absolute. Does
+    NOT confine to DEV_ROOT - running an instance in an arbitrary existing
+    directory is allowed; only the destructive purge path is confined (see
+    _safe_to_purge)."""
+    if not workdir or any(ord(c) < 32 for c in workdir):
+        return f"invalid workdir {workdir!r}: control characters are not allowed"
+    if not Path(workdir).is_absolute():
+        return f"invalid workdir {workdir!r}: must be an absolute path"
+    return None
+
+
+def _safe_to_purge(workdir: str) -> bool:
+    """Only ever rmtree dirs we created: real (non-symlink) directories confined
+    under DEV_ROOT. Never /root, never /, never outside DEV_ROOT, never a symlink.
+    This is the guard for `remove --purge-workdir` - the one destructive action."""
+    p = Path(workdir)
+    if p.is_symlink():
+        return False
+    resolved = p.resolve(strict=False)
+    # Reject /, /root, and DEV_ROOT itself (purging DEV_ROOT would nuke every
+    # instance's dir); only a strict child of DEV_ROOT is purgeable.
+    if resolved in (Path("/"), Path(DEFAULT_WORKDIR).resolve(), DEV_ROOT.resolve()):
+        return False
+    return resolved.is_relative_to(DEV_ROOT.resolve())
+
 
 def list_instances() -> list[dict]:
     out = run(["systemctl", "list-unit-files", "claude-remote@*.service",
-               "--no-pager", "--no-legend"]).stdout.strip().splitlines()
-    enabled_units = {ln.split()[0]: ln.split()[1] for ln in out if ln.strip()}
+               "--no-pager", "--no-legend", "--plain"]).stdout.strip().splitlines()
+    enabled_units = {}
+    for ln in out:
+        parts = ln.split()
+        if len(parts) >= 2:  # a stray single-token line must not crash the listing
+            enabled_units[parts[0]] = parts[1]
 
     # systemctl list-units columns: UNIT  LOAD  ACTIVE  SUB  DESCRIPTION
     out2 = run(["systemctl", "list-units", "claude-remote@*.service",
-                "--all", "--no-pager", "--no-legend"]).stdout.strip().splitlines()
+                "--all", "--no-pager", "--no-legend", "--plain"]).stdout.strip().splitlines()
     states = {}
     for ln in out2:
+        # systemctl prefixes a coloured "●" bullet on units needing attention
+        # (notably failed ones); strip it so the unit token stays at parts[0].
+        ln = ln.lstrip("●▪•* \t")
         parts = ln.split(None, 4)
-        if len(parts) >= 4:
+        if len(parts) >= 4 and parts[0].startswith("claude-remote@"):
             states[parts[0]] = (parts[2], parts[3])  # (active_state, sub_state)
 
     seen = set(enabled_units.keys()) | set(states.keys())
@@ -203,8 +249,11 @@ def list_instances() -> list[dict]:
         if tmux_alive:
             r = run(["tmux", "list-panes", "-t", f"claude-{name}",
                      "-F", "#{pane_current_command}"])
-            pane_cmd = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
-            claude_alive = pane_cmd in ("node", "claude", "claude.exe", "bun")
+            # Check every pane, not just the first - a split session with claude
+            # not listed first must not be mis-reported as DEAD (-> needless restart).
+            pane_cmds = r.stdout.strip().splitlines()
+            claude_alive = any(c in ("node", "claude", "claude.exe", "bun")
+                               for c in pane_cmds)
         workdir = read_workdir(name)
         url = last_url(name)
         mode = read_mode(name)
@@ -278,7 +327,10 @@ def write_mode_dropin(name: str, mode: str) -> None:
                 pass
     else:
         d.mkdir(parents=True, exist_ok=True)
-        f.write_text(f'[Service]\nEnvironment="CLAUDE_MODE={mode}"\n')
+        # Unquoted form on purpose: read_mode() matches the literal prefix
+        # "Environment=CLAUDE_MODE="; a quoted value (Environment="CLAUDE_MODE=..")
+        # would never be detected, so agents mode would read back as "code".
+        f.write_text(f"[Service]\nEnvironment=CLAUDE_MODE={mode}\n")
     systemctl("daemon-reload")
 
 
@@ -316,18 +368,26 @@ def start_instance(name: str, workdir: str = DEFAULT_WORKDIR,
                    clone_url: str | None = None,
                    create_venv: bool = True,
                    mode: str = "code") -> tuple[bool, str]:
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+    if not valid_name(name):
         return False, f"invalid name '{name}': must start with a lowercase letter or digit, then lowercase letters, digits, _, - only"
 
     if clone_url:
+        # Reject anything git could read as an option ('-'-leading) or an
+        # unexpected transport (ext::/file:// run shells) - clone runs as root.
+        if not re.match(r"(https://|git://|ssh://|git@)", clone_url):
+            return False, f"refusing clone url {clone_url!r}: only https://, git://, ssh://, or git@... are allowed"
         if workdir == DEFAULT_WORKDIR:
             workdir = str(DEV_ROOT / name)
         if Path(workdir).exists() and any(Path(workdir).iterdir()):
             return False, f"target dir {workdir} exists and is not empty"
         Path(workdir).parent.mkdir(parents=True, exist_ok=True)
-        r = run(["git", "clone", clone_url, workdir])
+        r = run(["git", "clone", "--", clone_url, workdir])
         if r.returncode != 0:
             return False, f"git clone failed: {r.stderr.strip()}"
+
+    werr = validate_workdir(workdir)
+    if werr:
+        return False, werr
 
     Path(workdir).mkdir(parents=True, exist_ok=True)
 
@@ -401,14 +461,23 @@ def restart_instance(name: str) -> tuple[bool, str]:
 
 
 def remove_instance(name: str, purge_workdir: bool = False) -> tuple[bool, str]:
+    if not valid_name(name):
+        return False, f"invalid name '{name}'"
     workdir = read_workdir(name)
     systemctl("stop", f"claude-remote@{name}.service")
     systemctl("disable", f"claude-remote@{name}.service")
     remove_dropin(name)
     msg = f"removed claude-remote@{name} (drop-in cleaned)"
-    if purge_workdir and workdir != DEFAULT_WORKDIR and Path(workdir).is_dir():
-        shutil.rmtree(workdir)
-        msg += f" + purged {workdir}"
+    if purge_workdir and Path(workdir).is_dir():
+        # Confine the one destructive action: only rmtree real dirs under
+        # DEV_ROOT. A workdir of /root, /etc, a symlink, or anything outside
+        # DEV_ROOT is refused (the old string-compare guard let /root/ through).
+        if _safe_to_purge(workdir):
+            shutil.rmtree(workdir)
+            msg += f" + purged {workdir}"
+        else:
+            msg += (f" (refused to purge {workdir}: only directories under {DEV_ROOT} "
+                    f"are auto-purged - delete it manually if intended)")
     sync_ssh()
     return True, msg
 
@@ -552,6 +621,7 @@ def _read_key() -> str:
             return ch.decode("utf-8", errors="ignore")
         except Exception:
             return ""
+    import select
     import termios
     import tty
     fd = sys.stdin.fileno()
@@ -560,6 +630,12 @@ def _read_key() -> str:
         tty.setraw(fd)
         ch = sys.stdin.read(1)
         if ch == "\x1b":
+            # A lone Esc has no follow-on bytes; don't block on read(2) waiting
+            # for two more keys (that hangs the menu and breaks the advertised
+            # 'esc to go back'). Only consume the arrow tail if it's already there.
+            ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+            if not ready:
+                return "esc"
             seq = sys.stdin.read(2)
             return {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}.get(seq, "esc")
         if ch in ("\r", "\n"):
@@ -696,17 +772,22 @@ def tui_main():
             clear_screen()
             console.print("[muted]bye[/muted]")
             return
-        if ans[0] == "new":
-            tui_create()
-        elif ans[0] == "sync":
-            ok, msg = sync_ssh()
-            clear_screen()
-            console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
-            input("press enter to continue...")
-        elif ans[0] == "shell":
-            tui_shell()
-        elif ans[0] == "inst":
-            tui_instance_menu(ans[1])
+        try:
+            if ans[0] == "new":
+                tui_create()
+            elif ans[0] == "sync":
+                ok, msg = sync_ssh()
+                clear_screen()
+                console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
+                input("press enter to continue...")
+            elif ans[0] == "shell":
+                tui_shell()
+            elif ans[0] == "inst":
+                tui_instance_menu(ans[1])
+        except KeyboardInterrupt:
+            # Ctrl-C inside a submenu / prompt returns to the main menu instead
+            # of unwinding tui_main() and quitting the whole TUI.
+            continue
 
 
 def render_instance_info(name: str, i: dict) -> Text:
@@ -770,6 +851,13 @@ def tui_instance_menu(name: str):
         if ans is None or ans == "back":
             return
         if ans == "attach":
+            # Don't execvp into a dead/absent session - that ejects the user to
+            # a bare shell (execvp replaces this process) instead of the menu.
+            if run(["tmux", "has-session", "-t", f"claude-{name}"]).returncode != 0:
+                clear_screen()
+                console.print(f"[err]{ICON_CROSS} no live tmux session for {name} - try restart[/err]")
+                input("press enter to continue...")
+                continue
             os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{name}"])
         elif ans == "url":
             url = last_url(name) or "(no URL captured yet - try restarting)"
@@ -1035,12 +1123,22 @@ def tui_shell():
 
 # ---- CLI ---------------------------------------------------------------------
 
+def _require_valid_name(name: str) -> None:
+    """Guard every name-taking CLI subcommand: only `start` validated before, so
+    a crafted name could steer drop-in path construction (and the rmtree)."""
+    if not valid_name(name):
+        console.print(f"[err]invalid instance name '{name}': lowercase letters, digits, _, - only "
+                      f"(must start with a letter or digit)[/]")
+        sys.exit(2)
+
+
 def cmd_list(args):
     insts = list_instances()
     print_centered(render_screen(render_instances_table(insts)))
 
 
 def cmd_start(args):
+    _require_valid_name(args.name)
     create_venv = True
     if args.no_venv:
         create_venv = False
@@ -1055,22 +1153,29 @@ def cmd_start(args):
 
 
 def cmd_stop(args):
+    _require_valid_name(args.name)
     ok, msg = stop_instance(args.name)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
 
 
 def cmd_restart(args):
+    _require_valid_name(args.name)
     ok, msg = restart_instance(args.name)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
 
 
 def cmd_attach(args):
+    _require_valid_name(args.name)
+    if run(["tmux", "has-session", "-t", f"claude-{args.name}"]).returncode != 0:
+        console.print(f"[err]no live tmux session for {args.name}[/]")
+        sys.exit(1)
     os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{args.name}"])
 
 
 def cmd_url(args):
+    _require_valid_name(args.name)
     url = last_url(args.name)
     if url:
         console.print(url)
@@ -1079,6 +1184,7 @@ def cmd_url(args):
 
 
 def cmd_remove(args):
+    _require_valid_name(args.name)
     ok, msg = remove_instance(args.name, purge_workdir=args.purge_workdir)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
@@ -1091,18 +1197,21 @@ def cmd_sync_ssh(args):
 
 
 def cmd_clean_venv(args):
+    _require_valid_name(args.name)
     ok, msg = clean_venv(args.name)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
 
 
 def cmd_add_venv(args):
+    _require_valid_name(args.name)
     ok, msg = add_venv(args.name)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
 
 
 def cmd_purge_venv(args):
+    _require_valid_name(args.name)
     ok, msg = purge_venv(args.name)
     console.print(f"[{'ok' if ok else 'err'}]{msg}[/]")
     sys.exit(0 if ok else 1)
