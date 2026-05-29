@@ -217,9 +217,9 @@ claude-mgr                    # → pick "homelab"
   browser or the Claude mobile app to attach as a *second* concurrent
   client.
 - **Auto-generated SSH aliases** — `claude-mgr` writes
-  `client/claude-instances-<host>.cfg` whenever you add/remove instances,
-  commits the change, and pushes. Clients pull and get the new aliases
-  for free. No manual config editing.
+  `client/claude-instances-<host>.cfg` whenever you add/remove instances.
+  Commit + push the repo and clients pull to get the new aliases. No
+  manual config editing.
 - **Pick Claude Code or Claude Agents per instance** — when you create
   a new instance the TUI asks whether to run plain `claude` (single
   agent, classic) or the new multi-agent `claude agents` TUI (research
@@ -289,7 +289,7 @@ your existing SSH config is the gate.
 | `S` | Start a stopped instance |
 | `d` | Delete highlighted instance (asks to confirm) |
 | `u` | Show the current `claude.ai/cli/...` URL for the highlighted instance |
-| `y` | Sync SSH aliases (writes `client/claude-instances-<host>.cfg`, commits, pushes) |
+| `y` | Sync SSH aliases (writes `client/claude-instances-<host>.cfg`; commit + push the repo yourself to share) |
 | `?` | Help overlay |
 | `q` | Quit |
 
@@ -318,7 +318,7 @@ claude-mgr restart <name>                  # restart (fresh claude.ai URL in cod
 claude-mgr remove <name>                   # remove the systemd unit + tmux session
                                            #   --purge-workdir
 claude-mgr url <name>                      # print the current claude.ai/cli/... URL
-claude-mgr sync-ssh                        # regenerate the client SSH config and push
+claude-mgr sync-ssh                        # regenerate the client SSH config (commit + push yourself)
 claude-mgr add-venv <name>                 # create .venv in the instance's workdir
 claude-mgr clean-venv <name>               # rebuild .venv from scratch
 claude-mgr purge-venv <name>               # delete .venv (fall back to system Python)
@@ -348,12 +348,10 @@ the unit. Equivalent to picking "switch mode" in the TUI.
 
 **Telegram pings stopped**
 - Check the bot token + chat ID in
-  `/etc/claudefarm/claudefarm.env` on the server. Test with:
+  `/root/.config/telegram_notify.json` on the server, and that
+  `/root/telegram_notify.py` exists and is executable. Test with:
   ```
-  source /etc/claudefarm/claudefarm.env
-  curl -s "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-       --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-       --data-urlencode "text=test"
+  echo "test" | /root/telegram_notify.py
   ```
 
 **Tab title doesn't update in Windows Terminal**

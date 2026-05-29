@@ -90,8 +90,17 @@ claude
 ```
 
 Run it once interactively. It opens a browser flow (or prints a URL to
-paste). Token gets stored in `/root/.claude/.credentials.json` - all
-instances share it.
+paste). The login token is stored in `/root/.claude/.credentials.json`.
+
+> **Per-instance config dirs.** Each instance runs with its own
+> `CLAUDE_CONFIG_DIR` (`/root/.claude-instances/<name>`) so the
+> `claude agents` supervisor, session roster, and IPC sockets are isolated
+> per instance - otherwise one instance's `claude agents` adopts another's
+> session and both crash. The wrapper symlinks `.credentials.json` and
+> `settings.json` back to `/root/.claude` (one shared login + shared
+> settings) and copies `.claude.json` once. After you re-login / rotate the
+> token, wipe `/root/.claude-instances/*/.claude.json` so stale copies don't
+> linger.
 
 ### 3. Spin up your first instance
 
