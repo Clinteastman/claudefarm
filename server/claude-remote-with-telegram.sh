@@ -18,6 +18,17 @@
 set -u
 
 INSTANCE="${1:-main}"
+
+# Validate the instance name even though systemd normally hands us a
+# claude-mgr-validated %i: a hostile $1 flows into the tmux session name, into
+# paths under /root/.claude-instances and /run/claude-status, and into the
+# inner command. Same charset as claude-mgr's NAME_RE (must start [a-z0-9]).
+case "$INSTANCE" in
+    ''|[!a-z0-9]*|*[!a-z0-9_-]*)
+        echo "claude-remote: invalid instance name '$INSTANCE'" >&2
+        exit 2 ;;
+esac
+
 SESSION="claude-${INSTANCE}"
 SESSION_NAME="LXC-105-${INSTANCE}"
 WORKDIR="${CLAUDE_WORKDIR:-/root}"
@@ -32,7 +43,10 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 # Workspace trust is per-directory; the chosen workdir must be pre-trusted.
 # To use a different workdir, set CLAUDE_WORKDIR=/path in the systemd unit
 # (or environment file) and ssh in once to accept trust on first run.
-cd "$WORKDIR"
+cd "$WORKDIR" || {
+    echo "[$(date -Is)] cannot cd to workdir '$WORKDIR'; aborting for systemd restart" | tee -a "$LOG"
+    exit 1
+}
 
 # Auto-activate per-instance Python venv if one exists at <workdir>/.venv.
 # claude-mgr creates this on instance startup for non-default workdirs so
@@ -52,18 +66,24 @@ fi
 CANON="/root/.claude"
 CLAUDE_CONFIG_DIR="/root/.claude-instances/$INSTANCE"
 export CLAUDE_CONFIG_DIR
-mkdir -p "$CLAUDE_CONFIG_DIR"
-# Login token: symlink so a re-login / token refresh propagates to all instances.
-if [ -e "$CANON/.credentials.json" ] && [ ! -e "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then
-    ln -s "$CANON/.credentials.json" "$CLAUDE_CONFIG_DIR/.credentials.json"
-fi
-# Settings + app state (onboarding / workspace-trust): copy ONCE per instance
-# (writable, seeded from canonical) so the instance doesn't re-run onboarding.
-for _f in settings.json .claude.json; do
+# Create the per-instance dir private (umask 077): it holds an OAuth/app-state
+# copy plus symlinks to the login token.
+(umask 077; mkdir -p "$CLAUDE_CONFIG_DIR")
+chmod 700 /root/.claude-instances "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
+# Login token + settings: SYMLINK to canonical so a re-login (token refresh) or
+# a settings.json edit propagates to every instance automatically.
+for _f in .credentials.json settings.json; do
     if [ -e "$CANON/$_f" ] && [ ! -e "$CLAUDE_CONFIG_DIR/$_f" ]; then
-        cp "$CANON/$_f" "$CLAUDE_CONFIG_DIR/$_f"
+        ln -s "$CANON/$_f" "$CLAUDE_CONFIG_DIR/$_f"
     fi
 done
+# App state (.claude.json: onboarding / workspace-trust, mutated per instance):
+# copy ONCE, kept private. NB: a re-login does NOT refresh these copies - wipe
+# /root/.claude-instances/*/.claude.json after rotating credentials.
+if [ -e "$CANON/.claude.json" ] && [ ! -e "$CLAUDE_CONFIG_DIR/.claude.json" ]; then
+    cp "$CANON/.claude.json" "$CLAUDE_CONFIG_DIR/.claude.json"
+    chmod 600 "$CLAUDE_CONFIG_DIR/.claude.json" 2>/dev/null || true
+fi
 echo "[$(date -Is)] CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR" | tee -a "$LOG"
 
 # Build a list of -e flags so any env var the systemd unit handed us
@@ -95,14 +115,16 @@ done < <(env | awk -F= '/^(PREVIEW_|TELEGRAM_|CLAUDEFARM_|CLAUDE_MGR_|HONCHO_|VI
 # inside it gets its own URL, the wrapper doesn't capture one).
 MODE="${CLAUDE_MODE:-code}"
 if [ "$MODE" = "agents" ]; then
-    INNER_CMD="claude agents"
+    INNER_CMD=(claude agents)
     echo "[$(date -Is)] mode=agents; running 'claude agents'" | tee -a "$LOG"
 else
-    INNER_CMD="claude --name \"$SESSION_NAME\""
+    INNER_CMD=(claude --name "$SESSION_NAME")
     echo "[$(date -Is)] mode=code; running 'claude --name ...'" | tee -a "$LOG"
 fi
 
-tmux new-session -d -s "$SESSION" "${TMUX_ENV_ARGS[@]}" "$INNER_CMD"
+# Pass the command as an argv array (not one string) so tmux execs it directly
+# instead of via `sh -c`, and -c so the pane starts in the workdir.
+tmux new-session -d -s "$SESSION" -c "$WORKDIR" "${TMUX_ENV_ARGS[@]}" "${INNER_CMD[@]}"
 tmux set-option -t "$SESSION" window-size latest 2>/dev/null || true
 tmux set-option -t "$SESSION" -w aggressive-resize on 2>/dev/null || true
 
@@ -160,22 +182,29 @@ echo "[$(date -Is)] URL=${URL:-none}; entering watchdog loop for instance=$INSTA
 # Exit when the tmux session dies OR when claude crashes inside it
 # (leaving the pane on a shell instead of the claude process), so systemd
 # restarts us.
+BAD_SAMPLES=0
 while tmux has-session -t "$SESSION" 2>/dev/null; do
   sleep 30
 
-  # Liveness: pane's current command should still be claude (or its node/bun
-  # runtime). If a shell took over, claude crashed - exit so systemd restarts.
-  PANE_CMD=$(tmux list-panes -t "$SESSION" -F '#{pane_current_command}' 2>/dev/null | head -1)
-  case "$PANE_CMD" in
-    node|claude|claude.exe|bun|"")
-      # node/claude/bun = healthy; "" = session vanished, has-session catches it
-      ;;
-    *)
-      echo "[$(date -Is)] pane command is '$PANE_CMD' (expected node/claude/bun); claude crashed - exiting for systemd restart" | tee -a "$LOG"
-      tmux kill-session -t "$SESSION" 2>/dev/null || true
-      exit 1
-      ;;
-  esac
+  # Liveness: at least one pane's current command should still be claude (or its
+  # node/bun runtime). Require TWO consecutive bad samples before acting so a
+  # momentary drop to a shell (a user's Ctrl+Z, a transient subprocess) doesn't
+  # kill a live session and destroy in-flight conversation state. Check ALL
+  # panes, not just the first - a split with claude not listed first is healthy.
+  PANE_CMDS=$(tmux list-panes -t "$SESSION" -F '#{pane_current_command}' 2>/dev/null)
+  if [ -z "$PANE_CMDS" ]; then
+    continue  # session vanished mid-check; has-session catches it next loop
+  fi
+  if echo "$PANE_CMDS" | grep -qE '^(node|claude|claude\.exe|bun)$'; then
+    BAD_SAMPLES=0
+    continue
+  fi
+  BAD_SAMPLES=$((BAD_SAMPLES + 1))
+  if [ "$BAD_SAMPLES" -ge 2 ]; then
+    echo "[$(date -Is)] no claude/node pane for 2 consecutive checks (last: $(echo "$PANE_CMDS" | tr '\n' ',')); claude crashed - exiting for systemd restart" | tee -a "$LOG"
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    exit 1
+  fi
 done
 
 echo "[$(date -Is)] tmux session $SESSION ended; exiting for systemd restart" | tee -a "$LOG"
