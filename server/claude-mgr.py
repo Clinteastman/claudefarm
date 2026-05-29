@@ -3,9 +3,8 @@
 claude-mgr: Catppuccin Mocha TUI + CLI to manage Claude Code instances.
 
 Each instance is one `claude-remote@<name>.service` systemd unit, owning its
-own tmux session (claude-<name>), its own claude.ai Remote Control URL via
-Telegram, and optionally its own working directory via a CLAUDE_WORKDIR
-drop-in.
+own tmux session (claude-<name>) and optionally its own working directory via
+a CLAUDE_WORKDIR drop-in. Reach a session over ssh+tmux.
 
 Dependencies (auto-installed by bootstrap.sh):
     pip install rich questionary
@@ -19,7 +18,6 @@ USAGE:
   claude-mgr stop <name>
   claude-mgr restart <name>
   claude-mgr attach <name>
-  claude-mgr url <name>
   claude-mgr remove <name>
   claude-mgr remove <name> --purge-workdir
   claude-mgr sync-ssh
@@ -108,7 +106,6 @@ CAT_THEME = Theme({
     "muted":      f"{C_OVERLAY}",
     "name":       f"bold {C_MAUVE}",
     "value":      f"{C_FG}",
-    "url":        f"{C_SAPPHIRE} underline",
     "host":       f"bold {C_LAVENDER}",
     "instance":   f"bold {C_MAUVE}",
     "title":      f"bold {C_PINK}",
@@ -137,7 +134,6 @@ ICON_DOT_ON      = chr(0xF111)   # nf-fa-circle (filled)
 ICON_DOT_OFF     = chr(0xF10C)   # nf-fa-circle_o (outline)
 ICON_TMUX        = chr(0xF120)   # nf-fa-terminal
 ICON_FOLDER      = chr(0xF07B)   # nf-fa-folder
-ICON_LINK        = chr(0xF0C1)   # nf-fa-link
 ICON_PLAY        = chr(0xF04B)   # nf-fa-play
 ICON_STOP        = chr(0xF04D)   # nf-fa-stop
 ICON_REFRESH     = chr(0xF021)   # nf-fa-refresh
@@ -255,13 +251,12 @@ def list_instances() -> list[dict]:
             claude_alive = any(c in ("node", "claude", "claude.exe", "bun")
                                for c in pane_cmds)
         workdir = read_workdir(name)
-        url = last_url(name)
         mode = read_mode(name)
         insts.append({
             "name": name, "unit": unit, "active": active, "sub": sub,
             "enabled": enabled, "tmux_alive": tmux_alive,
             "claude_alive": claude_alive,
-            "workdir": workdir, "url": url, "mode": mode,
+            "workdir": workdir, "mode": mode,
         })
     return insts
 
@@ -287,17 +282,6 @@ def read_mode(name: str) -> str:
                     return v
     return "code"
 
-
-def last_url(name: str) -> str | None:
-    # Agents-mode instances have no URL of their own (each dispatched agent gets
-    # its own). Scanning the journal here would surface a child agent's URL and
-    # mislabel it as the instance URL, so skip it entirely for agents mode.
-    if read_mode(name) == "agents":
-        return None
-    out = run(["journalctl", "-u", f"claude-remote@{name}.service",
-               "--no-pager", "-n", "200"]).stdout
-    m = list(re.finditer(r"https://claude\.ai[a-zA-Z0-9./_?=&%+-]+", out))
-    return m[-1].group(0) if m else None
 
 # ---- instance lifecycle ------------------------------------------------------
 
@@ -702,10 +686,9 @@ def render_instances_table(insts: list[dict]) -> Table:
     t.add_column("state", no_wrap=True)
     t.add_column("tmux", justify="center", width=6)
     t.add_column(f"{ICON_FOLDER}  workdir", style=C_SUBTEXT, overflow="fold")
-    t.add_column(f"{ICON_LINK} url", style=C_SAPPHIRE, overflow="fold", max_width=40)
 
     if not insts:
-        t.add_row("", Text("(no instances yet)", style="muted"), "", "", "", "", "")
+        t.add_row("", Text("(no instances yet)", style="muted"), "", "", "", "")
         return t
 
     for i in insts:
@@ -732,10 +715,6 @@ def render_instances_table(insts: list[dict]) -> Table:
         mode = i.get("mode", "code")
         mode_text = Text(mode, style=(C_PEACH if mode == "agents" else C_SUBTEXT))
 
-        url_short = ""
-        if i["url"]:
-            url_short = i["url"].split("/cli/")[-1] if "/cli/" in i["url"] else i["url"][-30:]
-
         t.add_row(
             state_icon(i),
             i["name"],
@@ -743,7 +722,6 @@ def render_instances_table(insts: list[dict]) -> Table:
             state_text,
             tmux_mark,
             i["workdir"],
-            url_short,
         )
     return t
 
@@ -812,8 +790,6 @@ def render_instance_info(name: str, i: dict) -> Text:
     info.append("  mode     ", style="muted")
     mode = i.get("mode", "code")
     info.append(f"{mode}\n", style=("warn" if mode == "agents" else "value"))
-    info.append("  url      ", style="muted")
-    info.append(i["url"] or "(none captured)", style="url" if i["url"] else "muted")
     return info
 
 
@@ -833,8 +809,7 @@ def tui_instance_menu(name: str):
         flip_target = "agents" if cur_mode == "code" else "code"
         options = [
             (f"{ICON_TMUX}  attach (Ctrl+b d to detach)", "attach"),
-            (f"{ICON_LINK}  show last claude.ai url", "url"),
-            (f"{ICON_REFRESH}  restart (kills convo, fresh url)", "restart"),
+            (f"{ICON_REFRESH}  restart (kills convo)", "restart"),
             (f"{ICON_CUBE}  switch mode -> {flip_target} (restarts session)", "switch-mode"),
             (f"{ICON_STOP}  stop", "stop"),
         ]
@@ -862,11 +837,6 @@ def tui_instance_menu(name: str):
                 input("press enter to continue...")
                 continue
             os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{name}"])
-        elif ans == "url":
-            url = last_url(name) or "(no URL captured yet - try restarting)"
-            clear_screen()
-            print_centered(render_screen(Text(url, style="url", justify="center")))
-            input("\npress enter to continue...")
         elif ans == "restart":
             clear_screen()
             with console.status(f"[info]restarting {name}...[/info]", spinner="dots"):
@@ -1177,15 +1147,6 @@ def cmd_attach(args):
     os.execvp("tmux", ["tmux", "attach", "-t", f"claude-{args.name}"])
 
 
-def cmd_url(args):
-    _require_valid_name(args.name)
-    url = last_url(args.name)
-    if url:
-        console.print(url)
-    else:
-        console.print("[muted](no URL captured)[/muted]")
-
-
 def cmd_remove(args):
     _require_valid_name(args.name)
     ok, msg = remove_instance(args.name, purge_workdir=args.purge_workdir)
@@ -1239,7 +1200,6 @@ def main():
     s = sp.add_parser("stop"); s.add_argument("name"); s.set_defaults(func=cmd_stop)
     s = sp.add_parser("restart"); s.add_argument("name"); s.set_defaults(func=cmd_restart)
     s = sp.add_parser("attach"); s.add_argument("name"); s.set_defaults(func=cmd_attach)
-    s = sp.add_parser("url"); s.add_argument("name"); s.set_defaults(func=cmd_url)
     s = sp.add_parser("remove"); s.add_argument("name"); s.add_argument("--purge-workdir", action="store_true"); s.set_defaults(func=cmd_remove)
     sp.add_parser("sync-ssh").set_defaults(func=cmd_sync_ssh)
     s = sp.add_parser("clean-venv", help="nuke + recreate the .venv in this instance's workdir"); s.add_argument("name"); s.set_defaults(func=cmd_clean_venv)

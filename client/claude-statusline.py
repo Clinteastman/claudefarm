@@ -3,10 +3,7 @@
 Claude Code statusline for the local Windows desktop.
 
 Mirrors the K12 statusline (Catppuccin Mocha + Nerd Font icons - same
-fields, same icons) but adds the "Remote: On/Off" badge that the
-@hoangvu12/claude-remote npm package's statusline.js shows. The badge
-tells you whether the local Discord daemon is currently relaying THIS
-session.
+fields, same icons).
 
 Wired in via C:\\Users\\cmoss\\.claude\\settings.json:
     "statusLine": {
@@ -25,10 +22,7 @@ then set Windows Terminal font to "Cascadia Code NF".
 from __future__ import annotations
 
 import json
-import os
-import re
 import sys
-from pathlib import Path
 
 # Force UTF-8 stdout so the box-drawing chars and Nerd Font icons render
 # regardless of locale. No-op when stdout is already UTF-8 (Linux default).
@@ -60,49 +54,6 @@ SEP       = f"{OVERLAY}│{RESET}"   # │  vertical bar separator
 
 def colour(text: str, *codes: str) -> str:
     return "".join(codes) + text + RESET
-
-
-def remote_status() -> str | None:
-    """
-    Replicate @hoangvu12/claude-remote's "Remote: On/Off" badge.
-
-    The package writes the daemon PID to ~/.claude-remote/active when its rc
-    daemon starts. CLAUDE_REMOTE_PIPE is only set when running inside a
-    session bound to that daemon - its name has the daemon's PID. If the
-    env-var PID matches the file PID and that process is still alive, this
-    session is being relayed.
-
-    Returns None when not running under claude-remote at all.
-    """
-    pipe = os.environ.get("CLAUDE_REMOTE_PIPE")
-    if not pipe:
-        return None
-
-    flag = Path.home() / ".claude-remote" / "active"
-    rc_match = re.search(r"claude-remote-(\d+)$", pipe)
-    rc_pid = int(rc_match.group(1)) if rc_match else None
-
-    is_active = False
-    try:
-        flag_pid = int(flag.read_text().strip())
-    except (FileNotFoundError, ValueError):
-        flag_pid = None
-    if flag_pid and rc_pid and flag_pid == rc_pid:
-        try:
-            os.kill(flag_pid, 0)
-            is_active = True
-        except PermissionError:
-            # Process exists but is owned by another user - it's alive.
-            is_active = True
-        except OSError:
-            # Dead (ProcessLookupError) or a transient error - report Off, but
-            # never unlink the daemon's flag file from a read-only statusline
-            # (the old code deleted live daemon state on PermissionError/OSError).
-            is_active = False
-
-    if is_active:
-        return colour("● On", GREEN, BOLD)
-    return colour("○ Off", OVERLAY)
 
 
 def main() -> int:
@@ -155,11 +106,6 @@ def main() -> int:
     # Non-default output style (dim, parenthesised)
     if out_style and out_style != "default":
         parts.append(colour(f"({out_style})", OVERLAY))
-
-    # Remote: On/Off (claude-remote daemon status, local-only)
-    rs = remote_status()
-    if rs is not None:
-        parts.append(f"Remote: {rs}")
 
     sys.stdout.write(f" {SEP} ".join(parts))
     return 0
