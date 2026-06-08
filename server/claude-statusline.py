@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
 
 # Force UTF-8 stdout so the box-drawing chars and Nerd Font icons render
@@ -56,6 +57,17 @@ def colour(text: str, *codes: str) -> str:
     return "".join(codes) + text + RESET
 
 
+def host_badge() -> str:
+    """Leftmost 'where am I?' anchor: OS icon + name, so the cloud farm (Linux)
+    vs the Windows desktop is obvious at a glance. No network call."""
+    system = platform.system()
+    if system == "Windows":
+        return colour(" Windows", SKY, BOLD)    # nf-fa-windows
+    if system == "Darwin":
+        return colour(" macOS", SUBTEXT, BOLD)  # nf-fa-apple
+    return colour(" Linux", GREEN, BOLD)        # nf-fa-linux (Tux)
+
+
 def main() -> int:
     raw = sys.stdin.read()
     try:
@@ -74,6 +86,9 @@ def main() -> int:
     instance    = os.environ.get("CLAUDE_INSTANCE") or os.environ.get("CLAUDE_NAME")
 
     parts: list[str] = []
+
+    # Host (leftmost anchor): which machine am I on
+    parts.append(host_badge())
 
     # Model:  Sonnet 4.6
     parts.append(colour(f" {model}", SAPPHIRE, BOLD))
